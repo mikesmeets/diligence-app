@@ -1,0 +1,16 @@
+App Purpose:
+This app helps investment analysis track and diligence investment ideas. This app tracks the top of funnel where ideas comes in, helps categorize and sort them, and track their performance over time.
+
+V1.0:
+Create a page where analysts can put in ideas to track. 
+Each idea should have:
+ticker (input).
+an initial date (input - use today's date as default),
+an initial price (the price of the stock on the data of input - use Yahoo finance or another free source),
+the date the idea was create (input),
+and the price on that date from Yahoo finance,
+change in price from idea data to initial data,
+change in pirce form initial date to today,
+thesis (input),
+idea direction (input - opions are long or short),
+asset class (input - public equity, private equity, bond, real estate)
