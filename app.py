@@ -223,6 +223,50 @@ def delete_idea(idea_id):
     return jsonify({'ok': True})
 
 
+@app.route('/ideas/<int:idea_id>')
+def idea_detail(idea_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT id, ticker, idea_date, idea_price, initial_date, initial_price, '
+            f'current_price, thesis, direction, asset_class, created_at, '
+            f'attachment_url, attachment_name FROM ideas WHERE id = {db.PH}',
+            (idea_id,),
+        )
+        idea = db.to_dict(cur.fetchone())
+    if not idea:
+        return 'Idea not found', 404
+
+    def pct(f, t):
+        if f and t:
+            return ((t - f) / f) * 100
+        return None
+
+    idea['change_idea_initial']  = pct(idea['idea_price'],    idea['initial_price'])
+    idea['change_initial_today'] = pct(idea['initial_price'], idea['current_price'])
+    return render_template('idea.html', idea=idea)
+
+
+@app.route('/api/ideas/<int:idea_id>/refresh-price', methods=['POST'])
+def refresh_single_price(idea_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT ticker FROM ideas WHERE id = {db.PH}', (idea_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    price = fetch_current_price(row['ticker'])
+    if price is None:
+        return jsonify({'error': f'Could not fetch price for {row["ticker"]}'}), 502
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE ideas SET current_price = {db.PH} WHERE id = {db.PH}',
+            (price, idea_id),
+        )
+    return jsonify({'price': price})
+
+
 @app.route('/api/stock-price')
 def stock_price():
     ticker = request.args.get('ticker', '').strip().upper()

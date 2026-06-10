@@ -282,7 +282,8 @@ function render() {
   }
 
   const rows = ideas.map(idea => `
-    <tr class="hover:bg-blue-50 transition-colors group">
+    <tr class="hover:bg-blue-50 transition-colors group cursor-pointer"
+        onclick="window.location='/ideas/${idea.id}'">
       <td class="px-4 py-3 font-bold text-gray-900">${escHtml(idea.ticker)}</td>
       <td class="px-4 py-3">
         <span class="px-2 py-0.5 rounded-full text-xs font-semibold
@@ -302,7 +303,7 @@ function render() {
         <span class="truncate-thesis block" title="${escHtml(idea.thesis)}">${escHtml(idea.thesis)}</span>
       </td>
       <td class="px-4 py-3">${fmtAttachment(idea)}</td>
-      <td class="px-4 py-3 whitespace-nowrap">
+      <td class="px-4 py-3 whitespace-nowrap" onclick="event.stopPropagation()">
         <button onclick="openEditModal(${idea.id})"
           class="text-gray-400 hover:text-blue-600 text-xs transition-colors mr-3">
           Edit
@@ -608,7 +609,14 @@ async function submitIdea(e) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
-loadIdeas();
+(async () => {
+  await loadIdeas();
+  const editId = new URLSearchParams(window.location.search).get('edit');
+  if (editId) {
+    window.history.replaceState({}, '', '/');
+    openEditModal(parseInt(editId));
+  }
+})();
 </script>
 </body>
 </html>

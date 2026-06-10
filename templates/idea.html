@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ idea.ticker }} — Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .spin { animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-3xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-4">
+      <a href="/" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← All Ideas</a>
+      <div class="h-4 w-px bg-gray-200"></div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-2xl font-bold text-gray-900 tracking-tight">{{ idea.ticker }}</span>
+          <span class="px-2 py-0.5 rounded-full text-xs font-semibold
+            {{ 'bg-green-100 text-green-700' if idea.direction == 'long' else 'bg-red-100 text-red-700' }}">
+            {{ idea.direction.upper() }}
+          </span>
+        </div>
+        <p class="text-sm text-gray-400 mt-0.5">
+          {{ {'public_equity':'Public Equity','private_equity':'Private Equity','bond':'Bond','real_estate':'Real Estate'}.get(idea.asset_class, idea.asset_class) }}
+        </p>
+      </div>
+    </div>
+    <div class="flex gap-2">
+      <a href="/?edit={{ idea.id }}"
+        class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+        Edit
+      </a>
+      <button onclick="deleteIdea()"
+        class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors">
+        Delete
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ─────────────────────────────────────────────────────────────────── -->
+<main class="max-w-3xl mx-auto px-6 py-8 space-y-5">
+
+  <!-- Price cards -->
+  <div class="grid grid-cols-3 gap-4">
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 mb-1">Idea Price</p>
+      <p class="text-xs text-gray-400 mb-2">{{ idea.idea_date }}</p>
+      <p class="text-xl font-bold text-gray-900 font-mono">
+        {% if idea.idea_price %}${{ '{:,.2f}'.format(idea.idea_price) }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+      </p>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 mb-1">Initial Price</p>
+      <p class="text-xs text-gray-400 mb-2">{{ idea.initial_date }}</p>
+      <p class="text-xl font-bold text-gray-900 font-mono">
+        {% if idea.initial_price %}${{ '{:,.2f}'.format(idea.initial_price) }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+      </p>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <div class="flex items-start justify-between">
+        <p class="text-xs text-gray-500 mb-1">Current Price</p>
+        <button id="refresh-btn" onclick="refreshPrice()" title="Refresh current price"
+          class="text-gray-400 hover:text-blue-600 text-sm transition-colors leading-none -mt-0.5">↻</button>
+      </div>
+      <p class="text-xs text-gray-400 mb-2">live</p>
+      <p class="text-xl font-bold text-gray-900 font-mono" id="current-price-display">
+        {% if idea.current_price %}${{ '{:,.2f}'.format(idea.current_price) }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+      </p>
+    </div>
+  </div>
+
+  <!-- Change cards -->
+  <div class="grid grid-cols-2 gap-4">
+    {% set c1 = idea.change_idea_initial %}
+    {% set c2 = idea.change_initial_today %}
+    {% set long = idea.direction == 'long' %}
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Idea → Initial</p>
+      {% if c1 is not none %}
+        <p class="text-3xl font-bold {{ 'text-green-600' if (long and c1 >= 0) or (not long and c1 <= 0) else 'text-red-600' }}">
+          {{ '+' if c1 >= 0 else '' }}{{ '{:.2f}'.format(c1) }}%
+        </p>
+      {% else %}
+        <p class="text-3xl font-bold text-gray-300">—</p>
+      {% endif %}
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Initial → Today</p>
+      {% if c2 is not none %}
+        <p class="text-3xl font-bold {{ 'text-green-600' if (long and c2 >= 0) or (not long and c2 <= 0) else 'text-red-600' }}" id="change-display">
+          {{ '+' if c2 >= 0 else '' }}{{ '{:.2f}'.format(c2) }}%
+        </p>
+      {% else %}
+        <p class="text-3xl font-bold text-gray-300" id="change-display">—</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Thesis -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Investment Thesis</p>
+    <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">{{ idea.thesis }}</p>
+  </div>
+
+  <!-- Attachment -->
+  {% if idea.attachment_url or idea.attachment_name %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Attachment</p>
+    {% if idea.attachment_name %}
+      <a href="/api/ideas/{{ idea.id }}/attachment" target="_blank"
+        class="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 transition-colors text-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+        </svg>
+        {{ idea.attachment_name }}
+      </a>
+    {% else %}
+      <a href="{{ idea.attachment_url }}" target="_blank" rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 transition-colors text-sm break-all">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+        </svg>
+        {{ idea.attachment_url }}
+      </a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</main>
+
+<script>
+const IDEA_ID     = {{ idea.id }};
+const TICKER      = '{{ idea.ticker }}';
+const INITIAL_PRICE = {{ idea.initial_price or 'null' }};
+const DIRECTION   = '{{ idea.direction }}';
+
+async function deleteIdea() {
+  if (!confirm('Delete this idea permanently?')) return;
+  await fetch(`/api/ideas/${IDEA_ID}`, { method: 'DELETE' });
+  window.location.href = '/';
+}
+
+async function refreshPrice() {
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = '↻';
+  btn.classList.add('spin');
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`/api/ideas/${IDEA_ID}/refresh-price`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Failed to refresh'); return; }
+
+    const price = data.price;
+    document.getElementById('current-price-display').innerHTML =
+      `$${price.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+
+    // Recompute Initial → Today change
+    if (INITIAL_PRICE) {
+      const pct  = ((price - INITIAL_PRICE) / INITIAL_PRICE) * 100;
+      const good = DIRECTION === 'long' ? pct >= 0 : pct <= 0;
+      const sign = pct >= 0 ? '+' : '';
+      document.getElementById('change-display').textContent = `${sign}${pct.toFixed(2)}%`;
+      document.getElementById('change-display').className =
+        `text-3xl font-bold ${good ? 'text-green-600' : 'text-red-600'}`;
+    }
+  } finally {
+    btn.classList.remove('spin');
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
