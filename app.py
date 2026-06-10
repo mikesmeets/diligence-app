@@ -27,7 +27,9 @@ def fetch_historical_price(ticker, date_str):
     df = _flatten(df)
     if df.empty or 'Close' not in df.columns:
         return None
-    df.index = df.index.tz_localize(None)
+    # tz_localize(None) raises if index is already tz-aware (newer yfinance)
+    if df.index.tz is not None:
+        df.index = df.index.tz_convert(None)
     idx = (df.index - target).abs().argmin()
     return round(float(df['Close'].iloc[idx]), 4)
 
