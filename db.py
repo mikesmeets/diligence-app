@@ -85,6 +85,11 @@ else:
     """
 
 
+def _pg_binary(data):
+    from psycopg2 import Binary
+    return Binary(data)
+
+
 def to_dict(row):
     return dict(row) if row else None
 

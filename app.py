@@ -138,6 +138,81 @@ def get_attachment(idea_id):
     )
 
 
+@app.route('/api/ideas/<int:idea_id>', methods=['PUT'])
+def update_idea(idea_id):
+    if request.content_type and 'multipart' in request.content_type:
+        data     = request.form
+        file_obj = request.files.get('file')
+    else:
+        data     = request.get_json(force=True)
+        file_obj = None
+
+    for field in ('ticker', 'idea_date', 'initial_date', 'thesis', 'direction', 'asset_class'):
+        if not data.get(field):
+            return jsonify({'error': f'{field} is required'}), 400
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+
+        # Always update core fields
+        cur.execute(
+            f'''UPDATE ideas SET
+                ticker        = {db.PH},
+                idea_date     = {db.PH},
+                idea_price    = {db.PH},
+                initial_date  = {db.PH},
+                initial_price = {db.PH},
+                current_price = {db.PH},
+                thesis        = {db.PH},
+                direction     = {db.PH},
+                asset_class   = {db.PH}
+            WHERE id = {db.PH}''',
+            (
+                data['ticker'].upper(),
+                data['idea_date'],
+                float(data['idea_price'])    if data.get('idea_price')    else None,
+                data['initial_date'],
+                float(data['initial_price']) if data.get('initial_price') else None,
+                float(data['current_price']) if data.get('current_price') else None,
+                data['thesis'],
+                data['direction'],
+                data['asset_class'],
+                idea_id,
+            ),
+        )
+
+        # Update attachment only when the client explicitly changed it
+        clear = data.get('clear_attachment') == 'true'
+        if clear:
+            cur.execute(
+                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, attachment_data={db.PH} WHERE id={db.PH}',
+                (None, None, None, idea_id),
+            )
+        elif file_obj and file_obj.filename:
+            raw = file_obj.read()
+            blob = db._pg_binary(raw) if db.IS_PG else raw
+            cur.execute(
+                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, attachment_data={db.PH} WHERE id={db.PH}',
+                (None, file_obj.filename, blob, idea_id),
+            )
+        elif 'attachment_url' in data:
+            cur.execute(
+                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, attachment_data={db.PH} WHERE id={db.PH}',
+                (data.get('attachment_url') or None, None, None, idea_id),
+            )
+        # else: attachment untouched
+
+        cur.execute(
+            f'SELECT id, ticker, idea_date, idea_price, initial_date, initial_price, '
+            f'current_price, thesis, direction, asset_class, created_at, '
+            f'attachment_url, attachment_name FROM ideas WHERE id = {db.PH}',
+            (idea_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+
+    return jsonify(row)
+
+
 @app.route('/api/ideas/<int:idea_id>', methods=['DELETE'])
 def delete_idea(idea_id):
     with db.get_conn() as conn:

@@ -48,7 +48,7 @@
 <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
   <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
     <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white z-10">
-      <h2 class="text-lg font-semibold text-gray-900">Add Investment Idea</h2>
+      <h2 id="modal-title" class="text-lg font-semibold text-gray-900">Add Investment Idea</h2>
       <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
     </div>
     <form id="idea-form" onsubmit="submitIdea(event)" class="px-6 py-5 space-y-4">
@@ -142,6 +142,16 @@
       <!-- Attachment -->
       <div class="border border-gray-200 rounded-lg p-3 space-y-2">
         <p class="text-sm font-medium text-gray-700">Attachment <span class="font-normal text-gray-400">(optional)</span></p>
+
+        <!-- Shown only when editing and idea already has an attachment -->
+        <div id="existing-attachment-strip" class="hidden flex items-center justify-between bg-gray-50 rounded-md px-3 py-2">
+          <span id="existing-attachment-label" class="text-xs text-gray-600 truncate max-w-[260px]"></span>
+          <label class="flex items-center gap-1.5 cursor-pointer select-none ml-3 flex-shrink-0">
+            <input type="checkbox" id="clear-attachment" class="accent-red-500" />
+            <span class="text-xs text-red-600">Remove</span>
+          </label>
+        </div>
+
         <div class="flex gap-4">
           <label class="flex items-center gap-1.5 cursor-pointer select-none">
             <input type="radio" name="attach-type" value="url" checked onchange="onAttachTypeChange()" class="accent-blue-600" />
@@ -187,6 +197,7 @@ const ASSET_LABELS = {
 };
 
 let ideas = [];
+let editingId = null;
 
 // ── Data ──────────────────────────────────────────────────────────────────
 
@@ -283,7 +294,11 @@ function render() {
         <span class="truncate-thesis block" title="${escHtml(idea.thesis)}">${escHtml(idea.thesis)}</span>
       </td>
       <td class="px-4 py-3">${fmtAttachment(idea)}</td>
-      <td class="px-4 py-3">
+      <td class="px-4 py-3 whitespace-nowrap">
+        <button onclick="openEditModal(${idea.id})"
+          class="text-gray-400 hover:text-blue-600 text-xs transition-colors mr-3">
+          Edit
+        </button>
         <button onclick="deleteIdea(${idea.id}, '${escHtml(idea.ticker)}')"
           class="text-gray-300 group-hover:text-gray-400 hover:!text-red-500 text-xs transition-colors">
           Delete
@@ -358,26 +373,67 @@ function onAttachTypeChange() {
   document.getElementById('attach-file-row').classList.toggle('hidden', !isFile);
 }
 
+function _resetModal() {
+  document.getElementById('f-idea-date').value     = '';
+  document.getElementById('f-initial-date').value  = '';
+  document.getElementById('f-ticker').value         = '';
+  document.getElementById('f-idea-price').value     = '';
+  document.getElementById('f-initial-price').value  = '';
+  document.getElementById('f-thesis').value         = '';
+  document.getElementById('f-attachment-url').value  = '';
+  document.getElementById('f-attachment-file').value = '';
+  document.getElementById('clear-attachment').checked = false;
+  document.querySelector('input[name="direction"][value="long"]').checked = true;
+  document.querySelector('input[name="attach-type"][value="url"]').checked  = true;
+  document.getElementById('f-asset-class').value    = 'public_equity';
+  document.getElementById('attach-url-row').classList.remove('hidden');
+  document.getElementById('attach-file-row').classList.add('hidden');
+  document.getElementById('existing-attachment-strip').classList.add('hidden');
+  clearErrors();
+}
+
 function openModal() {
+  editingId = null;
+  _resetModal();
   const today = new Date().toISOString().split('T')[0];
   document.getElementById('f-idea-date').value    = today;
   document.getElementById('f-initial-date').value = today;
-  document.getElementById('f-ticker').value        = '';
-  document.getElementById('f-idea-price').value    = '';
-  document.getElementById('f-initial-price').value = '';
-  document.getElementById('f-thesis').value        = '';
-  document.getElementById('f-attachment-url').value = '';
-  document.getElementById('f-attachment-file').value = '';
-  document.querySelector('input[name="direction"][value="long"]').checked = true;
-  document.querySelector('input[name="attach-type"][value="url"]').checked = true;
-  document.getElementById('f-asset-class').value   = 'public_equity';
-  document.getElementById('attach-url-row').classList.remove('hidden');
-  document.getElementById('attach-file-row').classList.add('hidden');
-  clearErrors();
+  document.getElementById('modal-title').textContent  = 'Add Investment Idea';
+  document.getElementById('submit-btn').textContent   = 'Add Idea';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function openEditModal(id) {
+  const idea = ideas.find(i => i.id === id);
+  if (!idea) return;
+  editingId = id;
+  _resetModal();
+
+  document.getElementById('f-ticker').value         = idea.ticker;
+  document.getElementById('f-idea-date').value      = idea.idea_date;
+  document.getElementById('f-idea-price').value     = idea.idea_price ?? '';
+  document.getElementById('f-initial-date').value   = idea.initial_date;
+  document.getElementById('f-initial-price').value  = idea.initial_price ?? '';
+  document.getElementById('f-thesis').value         = idea.thesis;
+  document.getElementById('f-asset-class').value    = idea.asset_class;
+  document.querySelector(`input[name="direction"][value="${idea.direction}"]`).checked = true;
+
+  // Show existing attachment if any
+  if (idea.attachment_name || idea.attachment_url) {
+    const label = idea.attachment_name
+      ? `📎 ${idea.attachment_name}`
+      : `🔗 ${idea.attachment_url}`;
+    document.getElementById('existing-attachment-label').textContent = label;
+    document.getElementById('existing-attachment-strip').classList.remove('hidden');
+  }
+
+  document.getElementById('modal-title').textContent = 'Edit Idea';
+  document.getElementById('submit-btn').textContent  = 'Save Changes';
   document.getElementById('modal').classList.remove('hidden');
 }
 
 function closeModal() {
+  editingId = null;
   document.getElementById('modal').classList.add('hidden');
 }
 
@@ -481,37 +537,53 @@ async function submitIdea(e) {
 
   // Build multipart form so file uploads work
   const fd = new FormData();
-  fd.append('ticker',        ticker);
-  fd.append('idea_date',     ideaDate);
-  fd.append('initial_date',  initialDate);
-  fd.append('thesis',        thesis);
-  fd.append('direction',     direction);
-  fd.append('asset_class',   assetClass);
-  if (ideaPrice)    fd.append('idea_price',    ideaPrice);
-  if (initialPrice) fd.append('initial_price', initialPrice);
+  fd.append('ticker',       ticker);
+  fd.append('idea_date',    ideaDate);
+  fd.append('initial_date', initialDate);
+  fd.append('thesis',       thesis);
+  fd.append('direction',    direction);
+  fd.append('asset_class',  assetClass);
+  if (ideaPrice)           fd.append('idea_price',    ideaPrice);
+  if (initialPrice)        fd.append('initial_price', initialPrice);
   if (currentPrice != null) fd.append('current_price', currentPrice);
 
-  const attachType = document.querySelector('input[name="attach-type"]:checked').value;
-  if (attachType === 'url') {
-    const url = document.getElementById('f-attachment-url').value.trim();
-    if (url) fd.append('attachment_url', url);
+  // Attachment — only send fields that changed (edit) or are provided (add)
+  const clearAtt = editingId && document.getElementById('clear-attachment').checked;
+  if (clearAtt) {
+    fd.append('clear_attachment', 'true');
   } else {
-    const file = document.getElementById('f-attachment-file').files[0];
-    if (file) fd.append('file', file);
+    const attachType = document.querySelector('input[name="attach-type"]:checked').value;
+    if (attachType === 'url') {
+      const url = document.getElementById('f-attachment-url').value.trim();
+      // In edit mode always send the key so backend knows to update it;
+      // in add mode only send if non-empty
+      if (editingId || url) fd.append('attachment_url', url);
+    } else {
+      const file = document.getElementById('f-attachment-file').files[0];
+      if (file) fd.append('file', file);
+    }
   }
 
   try {
-    const res = await fetch('/api/ideas', { method: 'POST', body: fd });
+    const url    = editingId ? `/api/ideas/${editingId}` : '/api/ideas';
+    const method = editingId ? 'PUT' : 'POST';
+    const res = await fetch(url, { method, body: fd });
     if (!res.ok) {
       const err = await res.json();
       alert(err.error || 'Failed to save idea');
       return;
     }
+    const saved = await res.json();
+    if (editingId) {
+      ideas = ideas.map(i => i.id === editingId ? saved : i);
+      render();
+    } else {
+      await loadIdeas();
+    }
     closeModal();
-    await loadIdeas();
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Add Idea';
+    btn.textContent = editingId ? 'Save Changes' : 'Add Idea';
   }
 }
 
