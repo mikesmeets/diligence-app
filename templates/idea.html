@@ -28,6 +28,9 @@
         </div>
         <p class="text-sm text-gray-400 mt-0.5">
           {{ {'public_equity':'Public Equity','private_equity':'Private Equity','bond':'Bond','real_estate':'Real Estate'}.get(idea.asset_class, idea.asset_class) }}
+          {% if idea.source_name %}
+            <span class="mx-1">·</span>{{ idea.source_name }}
+          {% endif %}
         </p>
       </div>
     </div>

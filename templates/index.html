@@ -71,6 +71,25 @@
   <div id="table-container"></div>
 </main>
 
+<!-- ── Manage Sources Modal ───────────────────────────────────────────── -->
+<div id="sources-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-900">Manage Sources</h2>
+      <button onclick="closeManageSources()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="px-6 py-4 space-y-3">
+      <div class="flex gap-2">
+        <input id="new-source-mgmt" type="text" placeholder="New source name…"
+          class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        <button onclick="addSourceFromMgmt()"
+          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Add</button>
+      </div>
+      <ul id="sources-list" class="divide-y divide-gray-100 max-h-60 overflow-y-auto rounded-lg border border-gray-200"></ul>
+    </div>
+  </div>
+</div>
+
 <!-- ── Add Idea Modal ─────────────────────────────────────────────────── -->
 <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
   <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -165,6 +184,28 @@
         </div>
       </div>
 
+      <!-- Source -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Source <span class="font-normal text-gray-400">(optional)</span></label>
+        <div class="flex gap-2">
+          <select id="f-source" onchange="onSourceChange()"
+            class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            <option value="">No source</option>
+          </select>
+          <button type="button" onclick="openManageSources()"
+            title="Manage sources"
+            class="px-2.5 border border-gray-200 rounded-lg text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors text-sm">⚙</button>
+        </div>
+        <div id="new-source-row" class="hidden mt-2 flex gap-2">
+          <input id="f-new-source" type="text" placeholder="New source name…"
+            class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <button type="button" onclick="saveNewSource()"
+            class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Add</button>
+          <button type="button" onclick="cancelNewSource()"
+            class="px-3 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors">✕</button>
+        </div>
+      </div>
+
       <!-- Thesis -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Investment Thesis</label>
@@ -231,7 +272,8 @@ const ASSET_LABELS = {
   real_estate:    'Real Estate',
 };
 
-let ideas = [];
+let ideas   = [];
+let sources = [];
 let editingId = null;
 
 // ── Filter & sort state ───────────────────────────────────────────────────
@@ -279,6 +321,7 @@ function getSortVal(idea, key) {
       const {initial_price: f, current_price: t} = idea;
       return (f && t) ? (t - f) / f * 100 : null;
     }
+    case 'source_name': return idea.source_name || null;
     default: return null;
   }
 }
@@ -322,6 +365,102 @@ function th(label, key, align = 'left') {
       ${label}${sortArrow(key)}
     </button>
   </th>`;
+}
+
+// ── Sources ───────────────────────────────────────────────────────────────
+
+async function loadSources() {
+  const res = await fetch('/api/sources');
+  sources = await res.json();
+  populateSourceDropdown();
+  renderSourcesList();
+}
+
+function populateSourceDropdown(selectedId) {
+  const sel = document.getElementById('f-source');
+  const cur = selectedId ?? (sel ? parseInt(sel.value) || null : null);
+  sel.innerHTML = '<option value="">No source</option>' +
+    sources.map(s => `<option value="${s.id}" ${s.id === cur ? 'selected' : ''}>${escHtml(s.name)}</option>`).join('') +
+    '<option value="__new__">＋ Add new source…</option>';
+}
+
+function onSourceChange() {
+  const val = document.getElementById('f-source').value;
+  document.getElementById('new-source-row').classList.toggle('hidden', val !== '__new__');
+  if (val === '__new__') document.getElementById('f-new-source').focus();
+}
+
+async function saveNewSource() {
+  const name = document.getElementById('f-new-source').value.trim();
+  if (!name) return;
+  const res  = await fetch('/api/sources', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name }),
+  });
+  const src = await res.json();
+  if (!sources.find(s => s.id === src.id)) sources.push(src);
+  sources.sort((a, b) => a.name.localeCompare(b.name));
+  populateSourceDropdown(src.id);
+  document.getElementById('new-source-row').classList.add('hidden');
+  document.getElementById('f-new-source').value = '';
+  renderSourcesList();
+}
+
+function cancelNewSource() {
+  document.getElementById('new-source-row').classList.add('hidden');
+  document.getElementById('f-new-source').value = '';
+  populateSourceDropdown();
+}
+
+function openManageSources() {
+  renderSourcesList();
+  document.getElementById('sources-modal').classList.remove('hidden');
+}
+
+function closeManageSources() {
+  document.getElementById('sources-modal').classList.add('hidden');
+}
+
+function renderSourcesList() {
+  const ul = document.getElementById('sources-list');
+  if (!ul) return;
+  if (sources.length === 0) {
+    ul.innerHTML = '<li class="px-3 py-3 text-sm text-gray-400">No sources yet.</li>';
+    return;
+  }
+  ul.innerHTML = sources.map(s => `
+    <li class="flex items-center justify-between px-3 py-2 text-sm">
+      <span class="text-gray-800">${escHtml(s.name)}</span>
+      <button onclick="deleteSource(${s.id})"
+        class="text-gray-300 hover:text-red-500 transition-colors text-xs ml-3">Delete</button>
+    </li>`).join('');
+}
+
+async function addSourceFromMgmt() {
+  const input = document.getElementById('new-source-mgmt');
+  const name  = input.value.trim();
+  if (!name) return;
+  const res = await fetch('/api/sources', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name }),
+  });
+  const src = await res.json();
+  if (!sources.find(s => s.id === src.id)) sources.push(src);
+  sources.sort((a, b) => a.name.localeCompare(b.name));
+  input.value = '';
+  populateSourceDropdown();
+  renderSourcesList();
+}
+
+async function deleteSource(id) {
+  if (!confirm('Delete this source? Ideas using it will lose their source.')) return;
+  await fetch(`/api/sources/${id}`, { method: 'DELETE' });
+  sources = sources.filter(s => s.id !== id);
+  // Update any loaded ideas that referenced this source
+  ideas = ideas.map(i => i.source_id === id ? { ...i, source_id: null, source_name: null } : i);
+  populateSourceDropdown();
+  renderSourcesList();
+  render();
 }
 
 // ── Data ──────────────────────────────────────────────────────────────────
@@ -449,6 +588,9 @@ function render() {
       <td class="px-4 py-3 text-right font-mono text-gray-900">${fmtPrice(idea.current_price)}</td>
       <td class="px-4 py-3 text-right">${fmtChange(idea.idea_price, idea.initial_price, idea.direction)}</td>
       <td class="px-4 py-3 text-right">${fmtChange(idea.initial_price, idea.current_price, idea.direction)}</td>
+      <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
+        ${idea.source_name ? escHtml(idea.source_name) : '<span class="text-gray-400">—</span>'}
+      </td>
       <td class="px-4 py-3 text-gray-600">
         <span class="truncate-thesis block" title="${escHtml(idea.thesis)}">${escHtml(idea.thesis)}</span>
       </td>
@@ -480,6 +622,7 @@ function render() {
             ${th('Current Price',   'current_price',       'right')}
             ${th('Idea → Initial',  'change_idea_initial', 'right')}
             ${th('Initial → Today', 'change_initial_today','right')}
+            ${th('Source',          'source_name')}
             <th class="px-4 py-3 text-left font-semibold">Thesis</th>
             <th class="px-4 py-3 text-left font-semibold">Attachment</th>
             <th class="px-4 py-3"></th>
@@ -545,6 +688,9 @@ function _resetModal() {
   document.querySelector('input[name="direction"][value="long"]').checked = true;
   document.querySelector('input[name="attach-type"][value="url"]').checked  = true;
   document.getElementById('f-asset-class').value    = 'public_equity';
+  populateSourceDropdown(null);
+  document.getElementById('new-source-row').classList.add('hidden');
+  document.getElementById('f-new-source').value = '';
   document.getElementById('attach-url-row').classList.remove('hidden');
   document.getElementById('attach-file-row').classList.add('hidden');
   document.getElementById('existing-attachment-strip').classList.add('hidden');
@@ -576,6 +722,7 @@ function openEditModal(id) {
   document.getElementById('f-thesis').value         = idea.thesis;
   document.getElementById('f-asset-class').value    = idea.asset_class;
   document.querySelector(`input[name="direction"][value="${idea.direction}"]`).checked = true;
+  populateSourceDropdown(idea.source_id || null);
 
   // Pre-populate attachment fields so they aren't blanked on save
   if (idea.attachment_url) {
@@ -715,9 +862,11 @@ async function submitIdea(e) {
   fd.append('thesis',       thesis);
   fd.append('direction',    direction);
   fd.append('asset_class',  assetClass);
-  if (ideaPrice)           fd.append('idea_price',    ideaPrice);
-  if (initialPrice)        fd.append('initial_price', initialPrice);
+  if (ideaPrice)            fd.append('idea_price',    ideaPrice);
+  if (initialPrice)         fd.append('initial_price', initialPrice);
   if (currentPrice != null) fd.append('current_price', currentPrice);
+  const sourceVal = document.getElementById('f-source').value;
+  if (sourceVal && sourceVal !== '__new__') fd.append('source_id', sourceVal);
 
   // Attachment — only send fields that changed (edit) or are provided (add)
   const clearAtt = editingId && document.getElementById('clear-attachment').checked;
@@ -761,7 +910,7 @@ async function submitIdea(e) {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 (async () => {
-  await loadIdeas();
+  await Promise.all([loadSources(), loadIdeas()]);
   const editId = new URLSearchParams(window.location.search).get('edit');
   if (editId) {
     window.history.replaceState({}, '', '/');

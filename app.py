@@ -54,14 +54,54 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/api/sources', methods=['GET'])
+def get_sources():
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute('SELECT id, name FROM sources ORDER BY name')
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/sources', methods=['POST'])
+def create_source():
+    data = request.get_json(force=True)
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO sources (name) VALUES ({db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id, name',
+                (name,),
+            )
+            row = db.to_dict(cur.fetchone())
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO sources (name) VALUES ({db.PH})', (name,))
+            cur.execute(f'SELECT id, name FROM sources WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/sources/<int:source_id>', methods=['DELETE'])
+def delete_source(source_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'DELETE FROM sources WHERE id = {db.PH}', (source_id,))
+    return jsonify({'ok': True})
+
+
 @app.route('/api/ideas', methods=['GET'])
 def get_ideas():
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
-            'SELECT id, ticker, idea_date, idea_price, initial_date, initial_price, '
-            'current_price, thesis, direction, asset_class, created_at, '
-            'attachment_url, attachment_name FROM ideas ORDER BY created_at DESC'
+            'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
+            'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
+            'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name '
+            'FROM ideas i LEFT JOIN sources s ON i.source_id = s.id '
+            'ORDER BY i.created_at DESC'
         )
         return jsonify(db.to_dicts(cur.fetchall()))
 
@@ -87,16 +127,19 @@ def create_idea():
         attachment_name = file_obj.filename
         attachment_data = file_obj.read()
 
+    source_id = int(data['source_id']) if data.get('source_id') else None
+
     values = (
         data['ticker'].upper(),
         data['idea_date'],
-        float(data['idea_price'])   if data.get('idea_price')    else None,
+        float(data['idea_price'])    if data.get('idea_price')    else None,
         data['initial_date'],
         float(data['initial_price']) if data.get('initial_price') else None,
         float(data['current_price']) if data.get('current_price') else None,
         data['thesis'],
         data['direction'],
         data['asset_class'],
+        source_id,
         datetime.now().isoformat(),
         attachment_url,
         attachment_name,
@@ -153,6 +196,8 @@ def update_idea(idea_id):
     with db.get_conn() as conn:
         cur = db.cursor(conn)
 
+        source_id = int(data['source_id']) if data.get('source_id') else None
+
         # Always update core fields
         cur.execute(
             f'''UPDATE ideas SET
@@ -164,7 +209,8 @@ def update_idea(idea_id):
                 current_price = {db.PH},
                 thesis        = {db.PH},
                 direction     = {db.PH},
-                asset_class   = {db.PH}
+                asset_class   = {db.PH},
+                source_id     = {db.PH}
             WHERE id = {db.PH}''',
             (
                 data['ticker'].upper(),
@@ -176,6 +222,7 @@ def update_idea(idea_id):
                 data['thesis'],
                 data['direction'],
                 data['asset_class'],
+                source_id,
                 idea_id,
             ),
         )
@@ -202,9 +249,11 @@ def update_idea(idea_id):
         # else: attachment untouched
 
         cur.execute(
-            f'SELECT id, ticker, idea_date, idea_price, initial_date, initial_price, '
-            f'current_price, thesis, direction, asset_class, created_at, '
-            f'attachment_url, attachment_name FROM ideas WHERE id = {db.PH}',
+            f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
+            f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
+            f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name '
+            f'FROM ideas i LEFT JOIN sources s ON i.source_id = s.id '
+            f'WHERE i.id = {db.PH}',
             (idea_id,),
         )
         row = db.to_dict(cur.fetchone())
@@ -225,9 +274,11 @@ def idea_detail(idea_id):
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
-            f'SELECT id, ticker, idea_date, idea_price, initial_date, initial_price, '
-            f'current_price, thesis, direction, asset_class, created_at, '
-            f'attachment_url, attachment_name FROM ideas WHERE id = {db.PH}',
+            f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
+            f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
+            f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name '
+            f'FROM ideas i LEFT JOIN sources s ON i.source_id = s.id '
+            f'WHERE i.id = {db.PH}',
             (idea_id,),
         )
         idea = db.to_dict(cur.fetchone())

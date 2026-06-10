@@ -28,6 +28,13 @@ if IS_PG:
     def cursor(conn):
         return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    _CREATE_SOURCES = """
+        CREATE TABLE IF NOT EXISTS sources (
+            id   SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              SERIAL PRIMARY KEY,
@@ -40,6 +47,7 @@ if IS_PG:
             thesis          TEXT             NOT NULL,
             direction       TEXT             NOT NULL,
             asset_class     TEXT             NOT NULL,
+            source_id       INTEGER          REFERENCES sources(id) ON DELETE SET NULL,
             created_at      TEXT             NOT NULL,
             attachment_url  TEXT,
             attachment_name TEXT,
@@ -65,6 +73,13 @@ else:
     def cursor(conn):
         return conn.cursor()
 
+    _CREATE_SOURCES = """
+        CREATE TABLE IF NOT EXISTS sources (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +92,7 @@ else:
             thesis          TEXT    NOT NULL,
             direction       TEXT    NOT NULL,
             asset_class     TEXT    NOT NULL,
+            source_id       INTEGER REFERENCES sources(id) ON DELETE SET NULL,
             created_at      TEXT    NOT NULL,
             attachment_url  TEXT,
             attachment_name TEXT,
@@ -101,6 +117,7 @@ def to_dicts(rows):
 def init():
     with get_conn() as conn:
         cur = cursor(conn)
+        cur.execute(_CREATE_SOURCES)
         cur.execute(_CREATE)
 
 
@@ -108,6 +125,7 @@ _MIGRATIONS = [
     ('attachment_url',  'TEXT'),
     ('attachment_name', 'TEXT'),
     ('attachment_data', 'BYTEA' if IS_PG else 'BLOB'),
+    ('source_id',       'INTEGER'),
 ]
 
 
@@ -127,11 +145,11 @@ def migrate():
 
 def insert_idea(conn, values: tuple) -> dict:
     """INSERT a row and return it as a dict, works for both PG and SQLite.
-    values must be a 13-tuple matching the columns below."""
+    values must be a 14-tuple matching the columns below."""
     cols = (
         'ticker', 'idea_date', 'idea_price', 'initial_date', 'initial_price',
-        'current_price', 'thesis', 'direction', 'asset_class', 'created_at',
-        'attachment_url', 'attachment_name', 'attachment_data',
+        'current_price', 'thesis', 'direction', 'asset_class', 'source_id',
+        'created_at', 'attachment_url', 'attachment_name', 'attachment_data',
     )
     col_list = ', '.join(cols)
     ph_list  = ', '.join([PH] * len(cols))
