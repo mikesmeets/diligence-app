@@ -23,14 +23,14 @@ def fetch_historical_price(ticker, date_str):
     target = datetime.strptime(date_str, '%Y-%m-%d')
     start  = (target - timedelta(days=7)).strftime('%Y-%m-%d')
     end    = (target + timedelta(days=4)).strftime('%Y-%m-%d')
-    # Ticker.history() always returns a flat DataFrame — avoids yf.download()
-    # MultiIndex/timezone breakage across yfinance versions
     df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
     if df.empty or 'Close' not in df.columns:
         return None
-    if df.index.tz is not None:
-        df.index = df.index.tz_convert(None)
-    idx = (df.index - target).abs().argmin()
+    # Compare at day precision with numpy to avoid pandas 2.x TimedeltaIndex issues
+    import numpy as np
+    target_day = np.datetime64(date_str, 'D')
+    days = np.abs(df.index.values.astype('datetime64[D]') - target_day)
+    idx = int(np.argmin(days))
     return round(float(df['Close'].iloc[idx]), 4)
 
 
