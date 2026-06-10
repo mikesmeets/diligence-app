@@ -21,17 +21,14 @@ def _flatten(df):
 
 def fetch_historical_price(ticker, date_str):
     target = datetime.strptime(date_str, '%Y-%m-%d')
-    start  = (target - timedelta(days=7)).strftime('%Y-%m-%d')
-    end    = (target + timedelta(days=4)).strftime('%Y-%m-%d')
+    # end is exclusive in yfinance, so +1 day to include the target date.
+    # If target is a weekend/holiday, iloc[-1] gives the most recent prior close.
+    start = (target - timedelta(days=7)).strftime('%Y-%m-%d')
+    end   = (target + timedelta(days=1)).strftime('%Y-%m-%d')
     df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
     if df.empty or 'Close' not in df.columns:
         return None
-    # Compare at day precision with numpy to avoid pandas 2.x TimedeltaIndex issues
-    import numpy as np
-    target_day = np.datetime64(date_str, 'D')
-    days = np.abs(df.index.values.astype('datetime64[D]') - target_day)
-    idx = int(np.argmin(days))
-    return round(float(df['Close'].iloc[idx]), 4)
+    return round(float(df['Close'].iloc[-1]), 4)
 
 
 def fetch_current_price(ticker):
