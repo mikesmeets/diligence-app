@@ -139,6 +139,30 @@
         <p id="err-thesis" class="hidden text-red-500 text-xs mt-1"></p>
       </div>
 
+      <!-- Attachment -->
+      <div class="border border-gray-200 rounded-lg p-3 space-y-2">
+        <p class="text-sm font-medium text-gray-700">Attachment <span class="font-normal text-gray-400">(optional)</span></p>
+        <div class="flex gap-4">
+          <label class="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="radio" name="attach-type" value="url" checked onchange="onAttachTypeChange()" class="accent-blue-600" />
+            <span class="text-sm">URL</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="radio" name="attach-type" value="file" onchange="onAttachTypeChange()" class="accent-blue-600" />
+            <span class="text-sm">File</span>
+          </label>
+        </div>
+        <div id="attach-url-row">
+          <input id="f-attachment-url" type="url" placeholder="https://..."
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div id="attach-file-row" class="hidden">
+          <input id="f-attachment-file" type="file"
+            class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+          <p class="text-xs text-gray-400 mt-1">Max 20 MB. PDF, Word, Excel, images, etc.</p>
+        </div>
+      </div>
+
       <div class="flex gap-3 pt-1">
         <button type="button" onclick="closeModal()"
           class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
@@ -258,6 +282,7 @@ function render() {
       <td class="px-4 py-3 text-gray-600">
         <span class="truncate-thesis block" title="${escHtml(idea.thesis)}">${escHtml(idea.thesis)}</span>
       </td>
+      <td class="px-4 py-3">${fmtAttachment(idea)}</td>
       <td class="px-4 py-3">
         <button onclick="deleteIdea(${idea.id}, '${escHtml(idea.ticker)}')"
           class="text-gray-300 group-hover:text-gray-400 hover:!text-red-500 text-xs transition-colors">
@@ -282,6 +307,7 @@ function render() {
             <th class="px-4 py-3 text-right font-semibold">Idea → Initial</th>
             <th class="px-4 py-3 text-right font-semibold">Initial → Today</th>
             <th class="px-4 py-3 text-left font-semibold">Thesis</th>
+            <th class="px-4 py-3 text-left font-semibold">Attachment</th>
             <th class="px-4 py-3"></th>
           </tr>
         </thead>
@@ -298,7 +324,39 @@ function escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+function fmtAttachment(idea) {
+  if (idea.attachment_name) {
+    return `<a href="/api/ideas/${idea.id}/attachment" target="_blank"
+      class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap">
+      <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+      </svg>
+      <span class="truncate max-w-[120px]" title="${escHtml(idea.attachment_name)}">${escHtml(idea.attachment_name)}</span>
+    </a>`;
+  }
+  if (idea.attachment_url) {
+    let label;
+    try { label = new URL(idea.attachment_url).hostname; } catch { label = idea.attachment_url; }
+    return `<a href="${escHtml(idea.attachment_url)}" target="_blank" rel="noopener noreferrer"
+      class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap">
+      <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+      </svg>
+      <span class="truncate max-w-[120px]" title="${escHtml(idea.attachment_url)}">${escHtml(label)}</span>
+    </a>`;
+  }
+  return '<span class="text-gray-400">—</span>';
+}
+
 // ── Modal ─────────────────────────────────────────────────────────────────
+
+function onAttachTypeChange() {
+  const isFile = document.querySelector('input[name="attach-type"]:checked').value === 'file';
+  document.getElementById('attach-url-row').classList.toggle('hidden', isFile);
+  document.getElementById('attach-file-row').classList.toggle('hidden', !isFile);
+}
 
 function openModal() {
   const today = new Date().toISOString().split('T')[0];
@@ -308,8 +366,13 @@ function openModal() {
   document.getElementById('f-idea-price').value    = '';
   document.getElementById('f-initial-price').value = '';
   document.getElementById('f-thesis').value        = '';
+  document.getElementById('f-attachment-url').value = '';
+  document.getElementById('f-attachment-file').value = '';
   document.querySelector('input[name="direction"][value="long"]').checked = true;
+  document.querySelector('input[name="attach-type"][value="url"]').checked = true;
   document.getElementById('f-asset-class').value   = 'public_equity';
+  document.getElementById('attach-url-row').classList.remove('hidden');
+  document.getElementById('attach-file-row').classList.add('hidden');
   clearErrors();
   document.getElementById('modal').classList.remove('hidden');
 }
@@ -416,24 +479,29 @@ async function submitIdea(e) {
     try { currentPrice = await fetchPriceFromAPI(ticker, 'today'); } catch {}
   }
 
-  const payload = {
-    ticker,
-    idea_date:    ideaDate,
-    idea_price:   ideaPrice    ? parseFloat(ideaPrice)    : null,
-    initial_date: initialDate,
-    initial_price: initialPrice ? parseFloat(initialPrice) : null,
-    current_price: currentPrice,
-    thesis,
-    direction,
-    asset_class: assetClass,
-  };
+  // Build multipart form so file uploads work
+  const fd = new FormData();
+  fd.append('ticker',        ticker);
+  fd.append('idea_date',     ideaDate);
+  fd.append('initial_date',  initialDate);
+  fd.append('thesis',        thesis);
+  fd.append('direction',     direction);
+  fd.append('asset_class',   assetClass);
+  if (ideaPrice)    fd.append('idea_price',    ideaPrice);
+  if (initialPrice) fd.append('initial_price', initialPrice);
+  if (currentPrice != null) fd.append('current_price', currentPrice);
+
+  const attachType = document.querySelector('input[name="attach-type"]:checked').value;
+  if (attachType === 'url') {
+    const url = document.getElementById('f-attachment-url').value.trim();
+    if (url) fd.append('attachment_url', url);
+  } else {
+    const file = document.getElementById('f-attachment-file').files[0];
+    if (file) fd.append('file', file);
+  }
 
   try {
-    const res = await fetch('/api/ideas', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch('/api/ideas', { method: 'POST', body: fd });
     if (!res.ok) {
       const err = await res.json();
       alert(err.error || 'Failed to save idea');

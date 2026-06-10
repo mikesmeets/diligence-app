@@ -6,7 +6,9 @@ from datetime import datetime, timedelta
 import db
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB upload limit
 db.init()
+db.migrate()
 
 
 # ── Price helpers ────────────────────────────────────────────────────────────
@@ -57,32 +59,83 @@ def index():
 def get_ideas():
     with db.get_conn() as conn:
         cur = db.cursor(conn)
-        cur.execute('SELECT * FROM ideas ORDER BY created_at DESC')
+        cur.execute(
+            'SELECT id, ticker, idea_date, idea_price, initial_date, initial_price, '
+            'current_price, thesis, direction, asset_class, created_at, '
+            'attachment_url, attachment_name FROM ideas ORDER BY created_at DESC'
+        )
         return jsonify(db.to_dicts(cur.fetchall()))
 
 
 @app.route('/api/ideas', methods=['POST'])
 def create_idea():
-    data = request.get_json(force=True)
+    # Accept multipart/form-data (file uploads) or plain JSON
+    if request.content_type and 'multipart' in request.content_type:
+        data = request.form
+        file_obj = request.files.get('file')
+    else:
+        data = request.get_json(force=True)
+        file_obj = None
+
     for field in ('ticker', 'idea_date', 'initial_date', 'thesis', 'direction', 'asset_class'):
         if not data.get(field):
             return jsonify({'error': f'{field} is required'}), 400
 
+    attachment_url  = data.get('attachment_url') or None
+    attachment_name = None
+    attachment_data = None
+    if file_obj and file_obj.filename:
+        attachment_name = file_obj.filename
+        attachment_data = file_obj.read()
+
     values = (
         data['ticker'].upper(),
         data['idea_date'],
-        data.get('idea_price'),
+        float(data['idea_price'])   if data.get('idea_price')    else None,
         data['initial_date'],
-        data.get('initial_price'),
-        data.get('current_price'),
+        float(data['initial_price']) if data.get('initial_price') else None,
+        float(data['current_price']) if data.get('current_price') else None,
         data['thesis'],
         data['direction'],
         data['asset_class'],
         datetime.now().isoformat(),
+        attachment_url,
+        attachment_name,
+        attachment_data,
     )
     with db.get_conn() as conn:
         row = db.insert_idea(conn, values)
     return jsonify(row), 201
+
+
+@app.route('/api/ideas/<int:idea_id>/attachment')
+def get_attachment(idea_id):
+    from flask import send_file
+    from io import BytesIO
+    import mimetypes
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT attachment_name, attachment_data FROM ideas WHERE id = {db.PH}',
+            (idea_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+
+    if not row or not row.get('attachment_data'):
+        return jsonify({'error': 'No file attachment'}), 404
+
+    data = row['attachment_data']
+    if isinstance(data, memoryview):
+        data = bytes(data)
+
+    mime = mimetypes.guess_type(row['attachment_name'])[0] or 'application/octet-stream'
+    return send_file(
+        BytesIO(data),
+        download_name=row['attachment_name'],
+        as_attachment=False,
+        mimetype=mime,
+    )
 
 
 @app.route('/api/ideas/<int:idea_id>', methods=['DELETE'])

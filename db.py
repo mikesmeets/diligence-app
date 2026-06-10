@@ -30,17 +30,20 @@ if IS_PG:
 
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
-            id            SERIAL PRIMARY KEY,
-            ticker        TEXT             NOT NULL,
-            idea_date     TEXT             NOT NULL,
-            idea_price    DOUBLE PRECISION,
-            initial_date  TEXT             NOT NULL,
-            initial_price DOUBLE PRECISION,
-            current_price DOUBLE PRECISION,
-            thesis        TEXT             NOT NULL,
-            direction     TEXT             NOT NULL,
-            asset_class   TEXT             NOT NULL,
-            created_at    TEXT             NOT NULL
+            id              SERIAL PRIMARY KEY,
+            ticker          TEXT             NOT NULL,
+            idea_date       TEXT             NOT NULL,
+            idea_price      DOUBLE PRECISION,
+            initial_date    TEXT             NOT NULL,
+            initial_price   DOUBLE PRECISION,
+            current_price   DOUBLE PRECISION,
+            thesis          TEXT             NOT NULL,
+            direction       TEXT             NOT NULL,
+            asset_class     TEXT             NOT NULL,
+            created_at      TEXT             NOT NULL,
+            attachment_url  TEXT,
+            attachment_name TEXT,
+            attachment_data BYTEA
         )
     """
 else:
@@ -64,17 +67,20 @@ else:
 
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker        TEXT    NOT NULL,
-            idea_date     TEXT    NOT NULL,
-            idea_price    REAL,
-            initial_date  TEXT    NOT NULL,
-            initial_price REAL,
-            current_price REAL,
-            thesis        TEXT    NOT NULL,
-            direction     TEXT    NOT NULL,
-            asset_class   TEXT    NOT NULL,
-            created_at    TEXT    NOT NULL
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker          TEXT    NOT NULL,
+            idea_date       TEXT    NOT NULL,
+            idea_price      REAL,
+            initial_date    TEXT    NOT NULL,
+            initial_price   REAL,
+            current_price   REAL,
+            thesis          TEXT    NOT NULL,
+            direction       TEXT    NOT NULL,
+            asset_class     TEXT    NOT NULL,
+            created_at      TEXT    NOT NULL,
+            attachment_url  TEXT,
+            attachment_name TEXT,
+            attachment_data BLOB
         )
     """
 
@@ -93,22 +99,53 @@ def init():
         cur.execute(_CREATE)
 
 
+_MIGRATIONS = [
+    ('attachment_url',  'TEXT'),
+    ('attachment_name', 'TEXT'),
+    ('attachment_data', 'BYTEA' if IS_PG else 'BLOB'),
+]
+
+
+def migrate():
+    """Add new columns to existing tables without breaking existing data."""
+    with get_conn() as conn:
+        cur = cursor(conn)
+        for col, typ in _MIGRATIONS:
+            if IS_PG:
+                cur.execute(f'ALTER TABLE ideas ADD COLUMN IF NOT EXISTS {col} {typ}')
+            else:
+                try:
+                    cur.execute(f'ALTER TABLE ideas ADD COLUMN {col} {typ}')
+                except Exception:
+                    pass  # column already exists
+
+
 def insert_idea(conn, values: tuple) -> dict:
-    """INSERT a row and return it as a dict, works for both PG and SQLite."""
+    """INSERT a row and return it as a dict, works for both PG and SQLite.
+    values must be a 13-tuple matching the columns below."""
     cols = (
         'ticker', 'idea_date', 'idea_price', 'initial_date', 'initial_price',
         'current_price', 'thesis', 'direction', 'asset_class', 'created_at',
+        'attachment_url', 'attachment_name', 'attachment_data',
     )
     col_list = ', '.join(cols)
     ph_list  = ', '.join([PH] * len(cols))
     cur = cursor(conn)
     if IS_PG:
+        from psycopg2 import Binary
+        # Wrap bytes so psycopg2 sends them as BYTEA, not text
+        values = tuple(Binary(v) if isinstance(v, (bytes, bytearray)) else v for v in values)
         cur.execute(
             f'INSERT INTO ideas ({col_list}) VALUES ({ph_list}) RETURNING *',
             values,
         )
-        return to_dict(cur.fetchone())
+        row = to_dict(cur.fetchone())
+        # Don't send binary blob back to the client
+        row.pop('attachment_data', None)
+        return row
     else:
         cur.execute(f'INSERT INTO ideas ({col_list}) VALUES ({ph_list})', values)
         cur.execute('SELECT * FROM ideas WHERE id = ?', (cur.lastrowid,))
-        return to_dict(cur.fetchone())
+        row = to_dict(cur.fetchone())
+        row.pop('attachment_data', None)
+        return row
