@@ -498,7 +498,8 @@ async function autoFetch(loaderId, priceFieldId, errFieldId, ticker, date) {
     const price = await fetchPriceFromAPI(ticker, date);
     document.getElementById(priceFieldId).value = price.toFixed(2);
   } catch (e) {
-    showErr(errFieldId.replace('f-','').replace('-price','').concat('-price'), e.message);
+    const el = document.getElementById(errFieldId);
+    if (el) { el.textContent = e.message; el.classList.remove('hidden'); }
   } finally {
     loader.classList.add('hidden');
   }

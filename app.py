@@ -23,11 +23,11 @@ def fetch_historical_price(ticker, date_str):
     target = datetime.strptime(date_str, '%Y-%m-%d')
     start  = (target - timedelta(days=7)).strftime('%Y-%m-%d')
     end    = (target + timedelta(days=4)).strftime('%Y-%m-%d')
-    df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-    df = _flatten(df)
+    # Ticker.history() always returns a flat DataFrame — avoids yf.download()
+    # MultiIndex/timezone breakage across yfinance versions
+    df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
     if df.empty or 'Close' not in df.columns:
         return None
-    # tz_localize(None) raises if index is already tz-aware (newer yfinance)
     if df.index.tz is not None:
         df.index = df.index.tz_convert(None)
     idx = (df.index - target).abs().argmin()
