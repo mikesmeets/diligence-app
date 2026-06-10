@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .spin { animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .truncate-thesis { max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-screen-2xl mx-auto flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Diligence App</h1>
+      <p class="text-sm text-gray-400 mt-0.5">Investment Idea Tracker</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="last-refreshed" class="text-xs text-gray-400"></span>
+      <button id="refresh-btn" onclick="refreshPrices()"
+        class="hidden px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+        ↻ Refresh Prices
+      </button>
+      <button onclick="openModal()"
+        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
+        + Add Idea
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Stats bar ──────────────────────────────────────────────────────── -->
+<div id="stats-bar" class="hidden bg-white border-b border-gray-100 px-6 py-2.5">
+  <div class="max-w-screen-2xl mx-auto flex gap-8 text-sm text-gray-500" id="stats-content"></div>
+</div>
+
+<!-- ── Table ──────────────────────────────────────────────────────────── -->
+<main class="max-w-screen-2xl mx-auto px-6 py-8">
+  <div id="table-container"></div>
+</main>
+
+<!-- ── Add Idea Modal ─────────────────────────────────────────────────── -->
+<div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white z-10">
+      <h2 class="text-lg font-semibold text-gray-900">Add Investment Idea</h2>
+      <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <form id="idea-form" onsubmit="submitIdea(event)" class="px-6 py-5 space-y-4">
+
+      <!-- Asset Class -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Asset Class</label>
+        <select id="f-asset-class" onchange="onAssetClassChange()"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="public_equity">Public Equity</option>
+          <option value="private_equity">Private Equity</option>
+          <option value="bond">Bond</option>
+          <option value="real_estate">Real Estate</option>
+        </select>
+      </div>
+
+      <!-- Ticker + Direction -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Ticker / Name</label>
+          <input id="f-ticker" type="text" autocomplete="off" onblur="onTickerBlur()"
+            oninput="this.value=this.value.toUpperCase()"
+            placeholder="e.g. AAPL"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <p id="err-ticker" class="hidden text-red-500 text-xs mt-1"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Direction</label>
+          <div class="flex gap-5 mt-2.5">
+            <label class="flex items-center gap-1.5 cursor-pointer select-none">
+              <input type="radio" name="direction" value="long" checked class="accent-blue-600" />
+              <span class="text-sm font-medium">Long</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer select-none">
+              <input type="radio" name="direction" value="short" class="accent-blue-600" />
+              <span class="text-sm font-medium">Short</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Idea Date + Price -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Idea Date</label>
+          <input id="f-idea-date" type="date" onblur="onIdeaDateBlur()"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <p id="err-idea-date" class="hidden text-red-500 text-xs mt-1"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+            Price on Idea Date
+            <span id="loading-idea" class="hidden text-blue-500 text-xs spin">↻</span>
+          </label>
+          <input id="f-idea-price" type="number" step="0.01" min="0"
+            placeholder="Auto-fetched"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <p id="err-idea-price" class="hidden text-red-500 text-xs mt-1"></p>
+        </div>
+      </div>
+
+      <!-- Initial Date + Price -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Initial Tracking Date</label>
+          <input id="f-initial-date" type="date" onblur="onInitialDateBlur()"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <p id="err-initial-date" class="hidden text-red-500 text-xs mt-1"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+            Price on Initial Date
+            <span id="loading-initial" class="hidden text-blue-500 text-xs spin">↻</span>
+          </label>
+          <input id="f-initial-price" type="number" step="0.01" min="0"
+            placeholder="Auto-fetched"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <p id="err-initial-price" class="hidden text-red-500 text-xs mt-1"></p>
+        </div>
+      </div>
+
+      <!-- Thesis -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Investment Thesis</label>
+        <textarea id="f-thesis" rows="3"
+          placeholder="Describe the investment thesis..."
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+        <p id="err-thesis" class="hidden text-red-500 text-xs mt-1"></p>
+      </div>
+
+      <div class="flex gap-3 pt-1">
+        <button type="button" onclick="closeModal()"
+          class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          Cancel
+        </button>
+        <button type="submit" id="submit-btn"
+          class="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
+          Add Idea
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── JavaScript ─────────────────────────────────────────────────────── -->
+<script>
+const ASSET_LABELS = {
+  public_equity:  'Public Equity',
+  private_equity: 'Private Equity',
+  bond:           'Bond',
+  real_estate:    'Real Estate',
+};
+
+let ideas = [];
+
+// ── Data ──────────────────────────────────────────────────────────────────
+
+async function loadIdeas() {
+  const res = await fetch('/api/ideas');
+  ideas = await res.json();
+  render();
+}
+
+async function deleteIdea(id, ticker) {
+  if (!confirm(`Delete idea for ${ticker}?`)) return;
+  await fetch(`/api/ideas/${id}`, { method: 'DELETE' });
+  ideas = ideas.filter(i => i.id !== id);
+  render();
+}
+
+async function refreshPrices() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  const res = await fetch('/api/ideas/refresh-prices', { method: 'POST' });
+  const data = await res.json();
+  await loadIdeas();
+  document.getElementById('last-refreshed').textContent =
+    `Updated ${new Date().toLocaleTimeString()}`;
+  btn.disabled = false;
+  btn.textContent = '↻ Refresh Prices';
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+
+function fmtPrice(p) {
+  if (p == null) return '<span class="text-gray-400">—</span>';
+  return `$${Number(p).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+}
+
+function fmtChange(from, to, direction) {
+  if (from == null || to == null) return '<span class="text-gray-400">—</span>';
+  const pct = ((to - from) / from) * 100;
+  const good = direction === 'long' ? pct >= 0 : pct <= 0;
+  const cls = good ? 'text-green-600' : 'text-red-600';
+  return `<span class="font-semibold ${cls}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+}
+
+function render() {
+  // Stats bar
+  const statsBar = document.getElementById('stats-bar');
+  const refreshBtn = document.getElementById('refresh-btn');
+  if (ideas.length > 0) {
+    statsBar.classList.remove('hidden');
+    const longs  = ideas.filter(i => i.direction === 'long').length;
+    const shorts = ideas.filter(i => i.direction === 'short').length;
+    document.getElementById('stats-content').innerHTML =
+      `<span><strong class="text-gray-800">${ideas.length}</strong> ideas</span>
+       <span><strong class="text-green-600">${longs}</strong> long</span>
+       <span><strong class="text-red-600">${shorts}</strong> short</span>`;
+    if (ideas.some(i => i.asset_class === 'public_equity'))
+      refreshBtn.classList.remove('hidden');
+  } else {
+    statsBar.classList.add('hidden');
+    refreshBtn.classList.add('hidden');
+  }
+
+  // Table
+  const container = document.getElementById('table-container');
+  if (ideas.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-24 text-gray-400">
+        <div class="text-5xl mb-4">📋</div>
+        <p class="text-lg font-medium text-gray-500">No ideas yet</p>
+        <p class="text-sm mt-1">Click "Add Idea" to start tracking investments.</p>
+      </div>`;
+    return;
+  }
+
+  const rows = ideas.map(idea => `
+    <tr class="hover:bg-blue-50 transition-colors group">
+      <td class="px-4 py-3 font-bold text-gray-900">${escHtml(idea.ticker)}</td>
+      <td class="px-4 py-3">
+        <span class="px-2 py-0.5 rounded-full text-xs font-semibold
+          ${idea.direction === 'long' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+          ${idea.direction.toUpperCase()}
+        </span>
+      </td>
+      <td class="px-4 py-3 text-gray-600 whitespace-nowrap">${ASSET_LABELS[idea.asset_class] || idea.asset_class}</td>
+      <td class="px-4 py-3 text-gray-600 whitespace-nowrap">${idea.idea_date}</td>
+      <td class="px-4 py-3 text-right font-mono text-gray-900">${fmtPrice(idea.idea_price)}</td>
+      <td class="px-4 py-3 text-gray-600 whitespace-nowrap">${idea.initial_date}</td>
+      <td class="px-4 py-3 text-right font-mono text-gray-900">${fmtPrice(idea.initial_price)}</td>
+      <td class="px-4 py-3 text-right font-mono text-gray-900">${fmtPrice(idea.current_price)}</td>
+      <td class="px-4 py-3 text-right">${fmtChange(idea.idea_price, idea.initial_price, idea.direction)}</td>
+      <td class="px-4 py-3 text-right">${fmtChange(idea.initial_price, idea.current_price, idea.direction)}</td>
+      <td class="px-4 py-3 text-gray-600">
+        <span class="truncate-thesis block" title="${escHtml(idea.thesis)}">${escHtml(idea.thesis)}</span>
+      </td>
+      <td class="px-4 py-3">
+        <button onclick="deleteIdea(${idea.id}, '${escHtml(idea.ticker)}')"
+          class="text-gray-300 group-hover:text-gray-400 hover:!text-red-500 text-xs transition-colors">
+          Delete
+        </button>
+      </td>
+    </tr>`).join('');
+
+  container.innerHTML = `
+    <div class="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
+      <table class="min-w-full bg-white text-sm">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-500">
+            <th class="px-4 py-3 text-left font-semibold">Ticker</th>
+            <th class="px-4 py-3 text-left font-semibold">Dir</th>
+            <th class="px-4 py-3 text-left font-semibold">Asset Class</th>
+            <th class="px-4 py-3 text-left font-semibold">Idea Date</th>
+            <th class="px-4 py-3 text-right font-semibold">Idea Price</th>
+            <th class="px-4 py-3 text-left font-semibold">Initial Date</th>
+            <th class="px-4 py-3 text-right font-semibold">Initial Price</th>
+            <th class="px-4 py-3 text-right font-semibold">Current Price</th>
+            <th class="px-4 py-3 text-right font-semibold">Idea → Initial</th>
+            <th class="px-4 py-3 text-right font-semibold">Initial → Today</th>
+            <th class="px-4 py-3 text-left font-semibold">Thesis</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────
+
+function openModal() {
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('f-idea-date').value    = today;
+  document.getElementById('f-initial-date').value = today;
+  document.getElementById('f-ticker').value        = '';
+  document.getElementById('f-idea-price').value    = '';
+  document.getElementById('f-initial-price').value = '';
+  document.getElementById('f-thesis').value        = '';
+  document.querySelector('input[name="direction"][value="long"]').checked = true;
+  document.getElementById('f-asset-class').value   = 'public_equity';
+  clearErrors();
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+}
+
+function clearErrors() {
+  ['ticker','idea-date','initial-date','idea-price','initial-price','thesis']
+    .forEach(f => { const el = document.getElementById(`err-${f}`); el.classList.add('hidden'); el.textContent=''; });
+}
+
+function showErr(field, msg) {
+  const el = document.getElementById(`err-${field}`);
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function onAssetClassChange() {
+  const isPublic = document.getElementById('f-asset-class').value === 'public_equity';
+  ['f-idea-price','f-initial-price'].forEach(id => {
+    document.getElementById(id).placeholder = isPublic ? 'Auto-fetched' : 'Optional';
+  });
+  document.getElementById('f-ticker').placeholder = isPublic ? 'e.g. AAPL' : 'e.g. Acme Corp';
+  if (!isPublic) {
+    document.getElementById('f-idea-price').value    = '';
+    document.getElementById('f-initial-price').value = '';
+  }
+}
+
+async function fetchPriceFromAPI(ticker, date) {
+  const res = await fetch(`/api/stock-price?ticker=${encodeURIComponent(ticker)}&date=${encodeURIComponent(date)}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to fetch');
+  return data.price;
+}
+
+async function autoFetch(loaderId, priceFieldId, errFieldId, ticker, date) {
+  if (!ticker || !date) return;
+  if (document.getElementById('f-asset-class').value !== 'public_equity') return;
+  const loader = document.getElementById(loaderId);
+  loader.classList.remove('hidden');
+  document.getElementById(errFieldId).classList.add('hidden');
+  try {
+    const price = await fetchPriceFromAPI(ticker, date);
+    document.getElementById(priceFieldId).value = price.toFixed(2);
+  } catch (e) {
+    showErr(errFieldId.replace('f-','').replace('-price','').concat('-price'), e.message);
+  } finally {
+    loader.classList.add('hidden');
+  }
+}
+
+async function onTickerBlur() {
+  const ticker = document.getElementById('f-ticker').value.trim();
+  const ideaDate    = document.getElementById('f-idea-date').value;
+  const initialDate = document.getElementById('f-initial-date').value;
+  await Promise.all([
+    autoFetch('loading-idea',    'f-idea-price',    'err-idea-price',    ticker, ideaDate),
+    autoFetch('loading-initial', 'f-initial-price', 'err-initial-price', ticker, initialDate),
+  ]);
+}
+
+async function onIdeaDateBlur() {
+  const ticker = document.getElementById('f-ticker').value.trim();
+  const date   = document.getElementById('f-idea-date').value;
+  await autoFetch('loading-idea', 'f-idea-price', 'err-idea-price', ticker, date);
+}
+
+async function onInitialDateBlur() {
+  const ticker = document.getElementById('f-ticker').value.trim();
+  const date   = document.getElementById('f-initial-date').value;
+  await autoFetch('loading-initial', 'f-initial-price', 'err-initial-price', ticker, date);
+}
+
+async function submitIdea(e) {
+  e.preventDefault();
+  clearErrors();
+
+  const ticker      = document.getElementById('f-ticker').value.trim();
+  const ideaDate    = document.getElementById('f-idea-date').value;
+  const initialDate = document.getElementById('f-initial-date').value;
+  const thesis      = document.getElementById('f-thesis').value.trim();
+  const direction   = document.querySelector('input[name="direction"]:checked').value;
+  const assetClass  = document.getElementById('f-asset-class').value;
+  const ideaPrice   = document.getElementById('f-idea-price').value;
+  const initialPrice = document.getElementById('f-initial-price').value;
+
+  let valid = true;
+  if (!ticker)      { showErr('ticker', 'Required'); valid = false; }
+  if (!ideaDate)    { showErr('idea-date', 'Required'); valid = false; }
+  if (!initialDate) { showErr('initial-date', 'Required'); valid = false; }
+  if (!thesis)      { showErr('thesis', 'Required'); valid = false; }
+  if (!valid) return;
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  // Fetch current price before saving
+  let currentPrice = null;
+  if (assetClass === 'public_equity') {
+    try { currentPrice = await fetchPriceFromAPI(ticker, 'today'); } catch {}
+  }
+
+  const payload = {
+    ticker,
+    idea_date:    ideaDate,
+    idea_price:   ideaPrice    ? parseFloat(ideaPrice)    : null,
+    initial_date: initialDate,
+    initial_price: initialPrice ? parseFloat(initialPrice) : null,
+    current_price: currentPrice,
+    thesis,
+    direction,
+    asset_class: assetClass,
+  };
+
+  try {
+    const res = await fetch('/api/ideas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || 'Failed to save idea');
+      return;
+    }
+    closeModal();
+    await loadIdeas();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add Idea';
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+loadIdeas();
+</script>
+</body>
+</html>
