@@ -103,9 +103,13 @@
             Price on Idea Date
             <span id="loading-idea" class="hidden text-blue-500 text-xs spin">↻</span>
           </label>
-          <input id="f-idea-price" type="number" step="0.01" min="0"
-            placeholder="Auto-fetched"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <div class="flex gap-1">
+            <input id="f-idea-price" type="number" step="0.01" min="0"
+              placeholder="Auto-fetched"
+              class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+            <button type="button" onclick="onIdeaDateBlur()" title="Refresh price"
+              class="px-2 border border-gray-200 rounded-lg text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors text-sm">↻</button>
+          </div>
           <p id="err-idea-price" class="hidden text-red-500 text-xs mt-1"></p>
         </div>
       </div>
@@ -123,9 +127,13 @@
             Price on Initial Date
             <span id="loading-initial" class="hidden text-blue-500 text-xs spin">↻</span>
           </label>
-          <input id="f-initial-price" type="number" step="0.01" min="0"
-            placeholder="Auto-fetched"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+          <div class="flex gap-1">
+            <input id="f-initial-price" type="number" step="0.01" min="0"
+              placeholder="Auto-fetched"
+              class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+            <button type="button" onclick="onInitialDateBlur()" title="Refresh price"
+              class="px-2 border border-gray-200 rounded-lg text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors text-sm">↻</button>
+          </div>
           <p id="err-initial-price" class="hidden text-red-500 text-xs mt-1"></p>
         </div>
       </div>
@@ -418,7 +426,19 @@ function openEditModal(id) {
   document.getElementById('f-asset-class').value    = idea.asset_class;
   document.querySelector(`input[name="direction"][value="${idea.direction}"]`).checked = true;
 
-  // Show existing attachment if any
+  // Pre-populate attachment fields so they aren't blanked on save
+  if (idea.attachment_url) {
+    document.querySelector('input[name="attach-type"][value="url"]').checked = true;
+    document.getElementById('f-attachment-url').value = idea.attachment_url;
+    document.getElementById('attach-url-row').classList.remove('hidden');
+    document.getElementById('attach-file-row').classList.add('hidden');
+  } else if (idea.attachment_name) {
+    document.querySelector('input[name="attach-type"][value="file"]').checked = true;
+    document.getElementById('attach-url-row').classList.add('hidden');
+    document.getElementById('attach-file-row').classList.remove('hidden');
+  }
+
+  // Show the existing-attachment strip so the user can see / remove it
   if (idea.attachment_name || idea.attachment_url) {
     const label = idea.attachment_name
       ? `📎 ${idea.attachment_name}`
