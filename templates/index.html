@@ -41,6 +41,33 @@
 
 <!-- ── Table ──────────────────────────────────────────────────────────── -->
 <main class="max-w-screen-2xl mx-auto px-6 py-8">
+
+  <!-- Filter bar -->
+  <div id="filter-bar" class="hidden mb-4 flex flex-wrap gap-3 items-center">
+    <input id="filter-search" type="text" placeholder="Search ticker or thesis…"
+      oninput="filterTicker=this.value.trim().toLowerCase(); render()"
+      class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 w-56" />
+
+    <div class="flex rounded-lg overflow-hidden border border-gray-300 text-sm">
+      <button id="dir-all"   onclick="setDir('all')"   class="px-3 py-1.5 font-medium">All</button>
+      <button id="dir-long"  onclick="setDir('long')"  class="px-3 py-1.5 font-medium border-l border-gray-300">Long</button>
+      <button id="dir-short" onclick="setDir('short')" class="px-3 py-1.5 font-medium border-l border-gray-300">Short</button>
+    </div>
+
+    <select id="filter-asset" onchange="filterAsset=this.value; render()"
+      class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+      <option value="all">All Asset Classes</option>
+      <option value="public_equity">Public Equity</option>
+      <option value="private_equity">Private Equity</option>
+      <option value="bond">Bond</option>
+      <option value="real_estate">Real Estate</option>
+    </select>
+
+    <button onclick="clearFilters()" id="clear-filters-btn"
+      class="hidden text-xs text-gray-400 hover:text-gray-600 underline">Clear filters</button>
+    <span id="filter-count" class="hidden text-xs text-gray-400"></span>
+  </div>
+
   <div id="table-container"></div>
 </main>
 
@@ -207,6 +234,96 @@ const ASSET_LABELS = {
 let ideas = [];
 let editingId = null;
 
+// ── Filter & sort state ───────────────────────────────────────────────────
+let filterTicker    = '';
+let filterDirection = 'all';
+let filterAsset     = 'all';
+let sortKey         = null;
+let sortDir         = 1;   // 1 = asc, -1 = desc
+
+function setDir(dir) {
+  filterDirection = dir;
+  render();
+}
+
+function clearFilters() {
+  filterTicker    = '';
+  filterDirection = 'all';
+  filterAsset     = 'all';
+  document.getElementById('filter-search').value = '';
+  document.getElementById('filter-asset').value  = 'all';
+  render();
+}
+
+function toggleSort(key) {
+  if (sortKey === key) { sortDir = -sortDir; }
+  else { sortKey = key; sortDir = 1; }
+  render();
+}
+
+function getSortVal(idea, key) {
+  switch (key) {
+    case 'ticker':              return idea.ticker;
+    case 'direction':           return idea.direction;
+    case 'asset_class':         return ASSET_LABELS[idea.asset_class] || idea.asset_class;
+    case 'idea_date':           return idea.idea_date;
+    case 'idea_price':          return idea.idea_price;
+    case 'initial_date':        return idea.initial_date;
+    case 'initial_price':       return idea.initial_price;
+    case 'current_price':       return idea.current_price;
+    case 'change_idea_initial': {
+      const {idea_price: f, initial_price: t} = idea;
+      return (f && t) ? (t - f) / f * 100 : null;
+    }
+    case 'change_initial_today': {
+      const {initial_price: f, current_price: t} = idea;
+      return (f && t) ? (t - f) / f * 100 : null;
+    }
+    default: return null;
+  }
+}
+
+function getFilteredSorted() {
+  let result = ideas.filter(i => {
+    if (filterTicker && !i.ticker.toLowerCase().includes(filterTicker) &&
+        !i.thesis.toLowerCase().includes(filterTicker)) return false;
+    if (filterDirection !== 'all' && i.direction !== filterDirection) return false;
+    if (filterAsset !== 'all' && i.asset_class !== filterAsset) return false;
+    return true;
+  });
+
+  if (sortKey) {
+    result.sort((a, b) => {
+      const av = getSortVal(a, sortKey);
+      const bv = getSortVal(b, sortKey);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+      return (av - bv) * sortDir;
+    });
+  }
+
+  return result;
+}
+
+function sortArrow(key) {
+  if (sortKey !== key) return '<span class="opacity-0 group-hover:opacity-40 ml-0.5">↕</span>';
+  return sortDir === 1
+    ? '<span class="text-blue-500 ml-0.5">↑</span>'
+    : '<span class="text-blue-500 ml-0.5">↓</span>';
+}
+
+function th(label, key, align = 'left') {
+  const justify = align === 'right' ? 'justify-end' : '';
+  return `<th class="px-4 py-3 text-${align} font-semibold">
+    <button onclick="toggleSort('${key}')"
+      class="inline-flex items-center ${justify} gap-0 hover:text-gray-700 whitespace-nowrap group w-full">
+      ${label}${sortArrow(key)}
+    </button>
+  </th>`;
+}
+
 // ── Data ──────────────────────────────────────────────────────────────────
 
 async function loadIdeas() {
@@ -251,10 +368,14 @@ function fmtChange(from, to, direction) {
 }
 
 function render() {
+  const filtered = getFilteredSorted();
+  const hasIdeas  = ideas.length > 0;
+  const isFiltered = filterTicker || filterDirection !== 'all' || filterAsset !== 'all';
+
   // Stats bar
-  const statsBar = document.getElementById('stats-bar');
+  const statsBar   = document.getElementById('stats-bar');
   const refreshBtn = document.getElementById('refresh-btn');
-  if (ideas.length > 0) {
+  if (hasIdeas) {
     statsBar.classList.remove('hidden');
     const longs  = ideas.filter(i => i.direction === 'long').length;
     const shorts = ideas.filter(i => i.direction === 'short').length;
@@ -269,6 +390,26 @@ function render() {
     refreshBtn.classList.add('hidden');
   }
 
+  // Filter bar visibility & direction pills
+  document.getElementById('filter-bar').classList.toggle('hidden', !hasIdeas);
+  ['all','long','short'].forEach(d => {
+    const btn = document.getElementById(`dir-${d}`);
+    const active = filterDirection === d;
+    btn.className = `px-3 py-1.5 font-medium text-sm transition-colors ${d !== 'all' ? 'border-l border-gray-300' : ''}
+      ${active ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`;
+  });
+
+  // Clear-filters button & count
+  const clearBtn   = document.getElementById('clear-filters-btn');
+  const countEl    = document.getElementById('filter-count');
+  clearBtn.classList.toggle('hidden', !isFiltered);
+  if (isFiltered) {
+    countEl.textContent = `${filtered.length} of ${ideas.length} shown`;
+    countEl.classList.remove('hidden');
+  } else {
+    countEl.classList.add('hidden');
+  }
+
   // Table
   const container = document.getElementById('table-container');
   if (ideas.length === 0) {
@@ -281,7 +422,16 @@ function render() {
     return;
   }
 
-  const rows = ideas.map(idea => `
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-16 text-gray-400">
+        <p class="text-base font-medium text-gray-500">No ideas match the current filters.</p>
+        <button onclick="clearFilters()" class="mt-2 text-sm text-blue-600 hover:underline">Clear filters</button>
+      </div>`;
+    return;
+  }
+
+  const rows = filtered.map(idea => `
     <tr class="hover:bg-blue-50 transition-colors group cursor-pointer"
         onclick="window.location='/ideas/${idea.id}'">
       <td class="px-4 py-3 font-bold text-gray-900">${escHtml(idea.ticker)}</td>
@@ -320,16 +470,16 @@ function render() {
       <table class="min-w-full bg-white text-sm">
         <thead>
           <tr class="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-500">
-            <th class="px-4 py-3 text-left font-semibold">Ticker</th>
-            <th class="px-4 py-3 text-left font-semibold">Dir</th>
-            <th class="px-4 py-3 text-left font-semibold">Asset Class</th>
-            <th class="px-4 py-3 text-left font-semibold">Idea Date</th>
-            <th class="px-4 py-3 text-right font-semibold">Idea Price</th>
-            <th class="px-4 py-3 text-left font-semibold">Initial Date</th>
-            <th class="px-4 py-3 text-right font-semibold">Initial Price</th>
-            <th class="px-4 py-3 text-right font-semibold">Current Price</th>
-            <th class="px-4 py-3 text-right font-semibold">Idea → Initial</th>
-            <th class="px-4 py-3 text-right font-semibold">Initial → Today</th>
+            ${th('Ticker',          'ticker')}
+            ${th('Dir',             'direction')}
+            ${th('Asset Class',     'asset_class')}
+            ${th('Idea Date',       'idea_date')}
+            ${th('Idea Price',      'idea_price',          'right')}
+            ${th('Initial Date',    'initial_date')}
+            ${th('Initial Price',   'initial_price',       'right')}
+            ${th('Current Price',   'current_price',       'right')}
+            ${th('Idea → Initial',  'change_idea_initial', 'right')}
+            ${th('Initial → Today', 'change_initial_today','right')}
             <th class="px-4 py-3 text-left font-semibold">Thesis</th>
             <th class="px-4 py-3 text-left font-semibold">Attachment</th>
             <th class="px-4 py-3"></th>
