@@ -10,7 +10,7 @@ import boto3
 from botocore.client import Config
 
 _ENDPOINT = os.environ.get('AWS_ENDPOINT_URL', '')
-_REGION   = os.environ.get('AWS_REGION', 'auto')
+_REGION   = 'auto'   # Tigris requires 'auto'; ignore AWS_REGION to avoid Railway overrides
 _BUCKET   = os.environ.get('AWS_S3_BUCKET_NAME', '')
 _KEY_ID   = os.environ.get('AWS_ACCESS_KEY_ID', '')
 _SECRET   = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
