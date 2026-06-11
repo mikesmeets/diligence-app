@@ -4,6 +4,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import db
+import storage
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB upload limit
@@ -123,9 +124,14 @@ def create_idea():
     attachment_url  = data.get('attachment_url') or None
     attachment_name = None
     attachment_data = None
+    attachment_key  = None
     if file_obj and file_obj.filename:
         attachment_name = file_obj.filename
-        attachment_data = file_obj.read()
+        raw = file_obj.read()
+        if storage.ENABLED:
+            attachment_key = storage.upload(raw, file_obj.filename)
+        else:
+            attachment_data = raw
 
     source_id = int(data['source_id']) if data.get('source_id') else None
 
@@ -144,6 +150,7 @@ def create_idea():
         attachment_url,
         attachment_name,
         attachment_data,
+        attachment_key,
     )
     with db.get_conn() as conn:
         row = db.insert_idea(conn, values)
@@ -152,25 +159,30 @@ def create_idea():
 
 @app.route('/api/ideas/<int:idea_id>/attachment')
 def get_attachment(idea_id):
-    from flask import send_file
+    from flask import send_file, redirect
     from io import BytesIO
     import mimetypes
 
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
-            f'SELECT attachment_name, attachment_data FROM ideas WHERE id = {db.PH}',
+            f'SELECT attachment_name, attachment_data, attachment_key FROM ideas WHERE id = {db.PH}',
             (idea_id,),
         )
         row = db.to_dict(cur.fetchone())
 
-    if not row or not row.get('attachment_data'):
+    if not row or (not row.get('attachment_key') and not row.get('attachment_data')):
         return jsonify({'error': 'No file attachment'}), 404
 
+    # Bucket storage: redirect to a short-lived presigned URL
+    if row.get('attachment_key'):
+        url = storage.presigned_url(row['attachment_key'])
+        return redirect(url)
+
+    # Legacy: binary stored in DB
     data = row['attachment_data']
     if isinstance(data, memoryview):
         data = bytes(data)
-
     mime = mimetypes.guess_type(row['attachment_name'])[0] or 'application/octet-stream'
     return send_file(
         BytesIO(data),
@@ -227,24 +239,46 @@ def update_idea(idea_id):
             ),
         )
 
+        # Fetch existing attachment_key so we can delete the old bucket object if replaced
+        cur.execute(f'SELECT attachment_key FROM ideas WHERE id = {db.PH}', (idea_id,))
+        existing = db.to_dict(cur.fetchone()) or {}
+        old_key = existing.get('attachment_key')
+
         # Update attachment only when the client explicitly changed it
         clear = data.get('clear_attachment') == 'true'
         if clear:
+            if old_key:
+                storage.delete(old_key)
             cur.execute(
-                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, attachment_data={db.PH} WHERE id={db.PH}',
-                (None, None, None, idea_id),
+                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
+                f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}',
+                (None, None, None, None, idea_id),
             )
         elif file_obj and file_obj.filename:
             raw = file_obj.read()
-            blob = db._pg_binary(raw) if db.IS_PG else raw
-            cur.execute(
-                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, attachment_data={db.PH} WHERE id={db.PH}',
-                (None, file_obj.filename, blob, idea_id),
-            )
+            if storage.ENABLED:
+                if old_key:
+                    storage.delete(old_key)
+                new_key = storage.upload(raw, file_obj.filename)
+                cur.execute(
+                    f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
+                    f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}',
+                    (None, file_obj.filename, None, new_key, idea_id),
+                )
+            else:
+                blob = db._pg_binary(raw) if db.IS_PG else raw
+                cur.execute(
+                    f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
+                    f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}',
+                    (None, file_obj.filename, blob, None, idea_id),
+                )
         elif 'attachment_url' in data:
+            if old_key:
+                storage.delete(old_key)
             cur.execute(
-                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, attachment_data={db.PH} WHERE id={db.PH}',
-                (data.get('attachment_url') or None, None, None, idea_id),
+                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
+                f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}',
+                (data.get('attachment_url') or None, None, None, None, idea_id),
             )
         # else: attachment untouched
 
@@ -265,6 +299,10 @@ def update_idea(idea_id):
 def delete_idea(idea_id):
     with db.get_conn() as conn:
         cur = db.cursor(conn)
+        cur.execute(f'SELECT attachment_key FROM ideas WHERE id = {db.PH}', (idea_id,))
+        row = db.to_dict(cur.fetchone()) or {}
+        if row.get('attachment_key'):
+            storage.delete(row['attachment_key'])
         cur.execute(f'DELETE FROM ideas WHERE id = {db.PH}', (idea_id,))
     return jsonify({'ok': True})
 

@@ -126,6 +126,7 @@ _MIGRATIONS = [
     ('attachment_name', 'TEXT'),
     ('attachment_data', 'BYTEA' if IS_PG else 'BLOB'),
     ('source_id',       'INTEGER'),
+    ('attachment_key',  'TEXT'),   # bucket object key (replaces attachment_data for new uploads)
 ]
 
 
@@ -150,6 +151,7 @@ def insert_idea(conn, values: tuple) -> dict:
         'ticker', 'idea_date', 'idea_price', 'initial_date', 'initial_price',
         'current_price', 'thesis', 'direction', 'asset_class', 'source_id',
         'created_at', 'attachment_url', 'attachment_name', 'attachment_data',
+        'attachment_key',
     )
     col_list = ', '.join(cols)
     ph_list  = ', '.join([PH] * len(cols))
