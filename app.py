@@ -129,7 +129,10 @@ def create_idea():
         attachment_name = file_obj.filename
         raw = file_obj.read()
         if storage.ENABLED:
-            attachment_key = storage.upload(raw, file_obj.filename)
+            try:
+                attachment_key = storage.upload(raw, file_obj.filename)
+            except Exception as exc:
+                return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
         else:
             attachment_data = raw
 
@@ -257,9 +260,12 @@ def update_idea(idea_id):
         elif file_obj and file_obj.filename:
             raw = file_obj.read()
             if storage.ENABLED:
-                if old_key:
-                    storage.delete(old_key)
-                new_key = storage.upload(raw, file_obj.filename)
+                try:
+                    if old_key:
+                        storage.delete(old_key)
+                    new_key = storage.upload(raw, file_obj.filename)
+                except Exception as exc:
+                    return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
                 cur.execute(
                     f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
                     f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}',
