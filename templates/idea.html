@@ -80,11 +80,24 @@
   </div>
 
   <!-- Change cards -->
-  <div class="grid grid-cols-2 gap-4">
-    {% set c1 = idea.change_idea_initial %}
-    {% set c2 = idea.change_initial_today %}
-    {% set long = idea.direction == 'long' %}
+  {% set c0 = idea.change_idea_current %}
+  {% set c1 = idea.change_idea_initial %}
+  {% set c2 = idea.change_initial_today %}
+  {% set long = idea.direction == 'long' %}
 
+  <!-- Idea → Current: hero card -->
+  <div class="bg-white rounded-xl border-2 {{ 'border-green-400' if c0 is not none and ((long and c0 >= 0) or (not long and c0 <= 0)) else 'border-red-400' if c0 is not none else 'border-gray-200' }} p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Idea → Current <span class="normal-case font-normal text-gray-300">(total return)</span></p>
+    {% if c0 is not none %}
+      <p class="text-4xl font-bold {{ 'text-green-600' if (long and c0 >= 0) or (not long and c0 <= 0) else 'text-red-600' }}" id="change-idea-current-display">
+        {{ '+' if c0 >= 0 else '' }}{{ '{:.2f}'.format(c0) }}%
+      </p>
+    {% else %}
+      <p class="text-4xl font-bold text-gray-300" id="change-idea-current-display">—</p>
+    {% endif %}
+  </div>
+
+  <div class="grid grid-cols-2 gap-4">
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Idea → Initial</p>
       {% if c1 is not none %}
@@ -143,10 +156,11 @@
 </main>
 
 <script>
-const IDEA_ID     = {{ idea.id }};
-const TICKER      = '{{ idea.ticker }}';
+const IDEA_ID       = {{ idea.id }};
+const TICKER        = '{{ idea.ticker }}';
+const IDEA_PRICE    = {{ idea.idea_price or 'null' }};
 const INITIAL_PRICE = {{ idea.initial_price or 'null' }};
-const DIRECTION   = '{{ idea.direction }}';
+const DIRECTION     = '{{ idea.direction }}';
 
 async function deleteIdea() {
   if (!confirm('Delete this idea permanently?')) return;
@@ -168,15 +182,18 @@ async function refreshPrice() {
     document.getElementById('current-price-display').innerHTML =
       `$${price.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
 
-    // Recompute Initial → Today change
-    if (INITIAL_PRICE) {
-      const pct  = ((price - INITIAL_PRICE) / INITIAL_PRICE) * 100;
+    // Recompute change displays
+    function applyPct(elId, from, to, sizeCls) {
+      if (!from || !to) return;
+      const pct  = ((to - from) / from) * 100;
       const good = DIRECTION === 'long' ? pct >= 0 : pct <= 0;
       const sign = pct >= 0 ? '+' : '';
-      document.getElementById('change-display').textContent = `${sign}${pct.toFixed(2)}%`;
-      document.getElementById('change-display').className =
-        `text-3xl font-bold ${good ? 'text-green-600' : 'text-red-600'}`;
+      const el   = document.getElementById(elId);
+      el.textContent = `${sign}${pct.toFixed(2)}%`;
+      el.className   = `${sizeCls} font-bold ${good ? 'text-green-600' : 'text-red-600'}`;
     }
+    applyPct('change-idea-current-display', IDEA_PRICE,    price, 'text-4xl');
+    applyPct('change-display',              INITIAL_PRICE, price, 'text-3xl');
   } finally {
     btn.classList.remove('spin');
     btn.disabled = false;

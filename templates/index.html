@@ -321,6 +321,10 @@ function getSortVal(idea, key) {
       const {initial_price: f, current_price: t} = idea;
       return (f && t) ? (t - f) / f * 100 : null;
     }
+    case 'change_idea_current': {
+      const {idea_price: f, current_price: t} = idea;
+      return (f && t) ? (t - f) / f * 100 : null;
+    }
     case 'source_name': return idea.source_name || null;
     default: return null;
   }
@@ -588,6 +592,7 @@ function render() {
       <td class="px-4 py-3 text-right font-mono text-gray-900">${fmtPrice(idea.current_price)}</td>
       <td class="px-4 py-3 text-right">${fmtChange(idea.idea_price, idea.initial_price, idea.direction)}</td>
       <td class="px-4 py-3 text-right">${fmtChange(idea.initial_price, idea.current_price, idea.direction)}</td>
+      <td class="px-4 py-3 text-right font-semibold">${fmtChange(idea.idea_price, idea.current_price, idea.direction)}</td>
       <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
         ${idea.source_name ? escHtml(idea.source_name) : '<span class="text-gray-400">—</span>'}
       </td>
@@ -622,6 +627,7 @@ function render() {
             ${th('Current Price',   'current_price',       'right')}
             ${th('Idea → Initial',  'change_idea_initial', 'right')}
             ${th('Initial → Today', 'change_initial_today','right')}
+            ${th('Idea → Current',  'change_idea_current', 'right')}
             ${th('Source',          'source_name')}
             <th class="px-4 py-3 text-left font-semibold">Thesis</th>
             <th class="px-4 py-3 text-left font-semibold">Attachment</th>

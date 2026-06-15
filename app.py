@@ -336,6 +336,7 @@ def idea_detail(idea_id):
 
     idea['change_idea_initial']  = pct(idea['idea_price'],    idea['initial_price'])
     idea['change_initial_today'] = pct(idea['initial_price'], idea['current_price'])
+    idea['change_idea_current']  = pct(idea['idea_price'],    idea['current_price'])
     return render_template('idea.html', idea=idea)
 
 
