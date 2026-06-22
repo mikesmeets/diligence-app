@@ -25,7 +25,7 @@ def fetch_historical_price(ticker, date_str):
     # end is exclusive in yfinance, so +1 day to include the target date.
     # If target is a weekend/holiday, iloc[-1] gives the most recent prior close.
     start = (target - timedelta(days=7)).strftime('%Y-%m-%d')
-    end   = (target + timedelta(days=1)).strftime('%Y-%m-%d')
+    end   = target.strftime('%Y-%m-%d')  # exclusive — gives prior trading day's close
     df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
     if df.empty or 'Close' not in df.columns:
         return None
