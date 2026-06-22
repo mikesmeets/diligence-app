@@ -206,6 +206,15 @@
         </div>
       </div>
 
+      <!-- Hat Tip -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Hat Tip <span class="font-normal text-gray-400">(optional)</span></label>
+        <select id="f-hat-tip"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+          <option value="">None</option>
+        </select>
+      </div>
+
       <!-- Thesis -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Investment Thesis</label>
@@ -325,7 +334,8 @@ function getSortVal(idea, key) {
       const {idea_price: f, current_price: t} = idea;
       return (f && t) ? (t - f) / f * 100 : null;
     }
-    case 'source_name': return idea.source_name || null;
+    case 'source_name':   return idea.source_name   || null;
+    case 'hat_tip_name':  return idea.hat_tip_name  || null;
     default: return null;
   }
 }
@@ -377,6 +387,7 @@ async function loadSources() {
   const res = await fetch('/api/sources');
   sources = await res.json();
   populateSourceDropdown();
+  populateHatTipDropdown();
   renderSourcesList();
 }
 
@@ -386,6 +397,13 @@ function populateSourceDropdown(selectedId) {
   sel.innerHTML = '<option value="">No source</option>' +
     sources.map(s => `<option value="${s.id}" ${s.id === cur ? 'selected' : ''}>${escHtml(s.name)}</option>`).join('') +
     '<option value="__new__">＋ Add new source…</option>';
+}
+
+function populateHatTipDropdown(selectedId) {
+  const sel = document.getElementById('f-hat-tip');
+  const cur = selectedId ?? (sel ? parseInt(sel.value) || null : null);
+  sel.innerHTML = '<option value="">None</option>' +
+    sources.map(s => `<option value="${s.id}" ${s.id === cur ? 'selected' : ''}>${escHtml(s.name)}</option>`).join('');
 }
 
 function onSourceChange() {
@@ -405,6 +423,7 @@ async function saveNewSource() {
   if (!sources.find(s => s.id === src.id)) sources.push(src);
   sources.sort((a, b) => a.name.localeCompare(b.name));
   populateSourceDropdown(src.id);
+  populateHatTipDropdown();
   document.getElementById('new-source-row').classList.add('hidden');
   document.getElementById('f-new-source').value = '';
   renderSourcesList();
@@ -453,6 +472,7 @@ async function addSourceFromMgmt() {
   sources.sort((a, b) => a.name.localeCompare(b.name));
   input.value = '';
   populateSourceDropdown();
+  populateHatTipDropdown();
   renderSourcesList();
 }
 
@@ -460,9 +480,15 @@ async function deleteSource(id) {
   if (!confirm('Delete this source? Ideas using it will lose their source.')) return;
   await fetch(`/api/sources/${id}`, { method: 'DELETE' });
   sources = sources.filter(s => s.id !== id);
-  // Update any loaded ideas that referenced this source
-  ideas = ideas.map(i => i.source_id === id ? { ...i, source_id: null, source_name: null } : i);
+  ideas = ideas.map(i => ({
+    ...i,
+    source_id:    i.source_id    === id ? null : i.source_id,
+    source_name:  i.source_id    === id ? null : i.source_name,
+    hat_tip_id:   i.hat_tip_id   === id ? null : i.hat_tip_id,
+    hat_tip_name: i.hat_tip_id   === id ? null : i.hat_tip_name,
+  }));
   populateSourceDropdown();
+  populateHatTipDropdown();
   renderSourcesList();
   render();
 }
@@ -596,6 +622,9 @@ function render() {
       <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
         ${idea.source_name ? escHtml(idea.source_name) : '<span class="text-gray-400">—</span>'}
       </td>
+      <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
+        ${idea.hat_tip_name ? escHtml(idea.hat_tip_name) : '<span class="text-gray-400">—</span>'}
+      </td>
       <td class="px-4 py-3 text-gray-600">
         <span class="truncate-thesis block" title="${escHtml(idea.thesis)}">${escHtml(idea.thesis)}</span>
       </td>
@@ -629,6 +658,7 @@ function render() {
             ${th('Initial → Today', 'change_initial_today','right')}
             ${th('Idea → Current',  'change_idea_current', 'right')}
             ${th('Source',          'source_name')}
+            ${th('Hat Tip',         'hat_tip_name')}
             <th class="px-4 py-3 text-left font-semibold">Thesis</th>
             <th class="px-4 py-3 text-left font-semibold">Attachment</th>
             <th class="px-4 py-3"></th>
@@ -695,6 +725,7 @@ function _resetModal() {
   document.querySelector('input[name="attach-type"][value="url"]').checked  = true;
   document.getElementById('f-asset-class').value    = 'public_equity';
   populateSourceDropdown(null);
+  populateHatTipDropdown(null);
   document.getElementById('new-source-row').classList.add('hidden');
   document.getElementById('f-new-source').value = '';
   document.getElementById('attach-url-row').classList.remove('hidden');
@@ -729,6 +760,7 @@ function openEditModal(id) {
   document.getElementById('f-asset-class').value    = idea.asset_class;
   document.querySelector(`input[name="direction"][value="${idea.direction}"]`).checked = true;
   populateSourceDropdown(idea.source_id || null);
+  populateHatTipDropdown(idea.hat_tip_id || null);
 
   // Pre-populate attachment fields so they aren't blanked on save
   if (idea.attachment_url) {
@@ -871,8 +903,10 @@ async function submitIdea(e) {
   if (ideaPrice)            fd.append('idea_price',    ideaPrice);
   if (initialPrice)         fd.append('initial_price', initialPrice);
   if (currentPrice != null) fd.append('current_price', currentPrice);
-  const sourceVal = document.getElementById('f-source').value;
+  const sourceVal  = document.getElementById('f-source').value;
   if (sourceVal && sourceVal !== '__new__') fd.append('source_id', sourceVal);
+  const hatTipVal = document.getElementById('f-hat-tip').value;
+  if (hatTipVal) fd.append('hat_tip_id', hatTipVal);
 
   // Attachment — only send fields that changed (edit) or are provided (add)
   const clearAtt = editingId && document.getElementById('clear-attachment').checked;

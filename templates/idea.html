@@ -127,6 +127,14 @@
     <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">{{ idea.thesis }}</p>
   </div>
 
+  <!-- Hat Tip -->
+  {% if idea.hat_tip_name %}
+  <div class="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-2 text-sm text-gray-500">
+    <span class="text-gray-400">🎩</span>
+    <span>Hat tip: <span class="font-medium text-gray-700">{{ idea.hat_tip_name }}</span></span>
+  </div>
+  {% endif %}
+
   <!-- Attachment -->
   {% if idea.attachment_url or idea.attachment_name %}
   <div class="bg-white rounded-xl border border-gray-200 p-5">
