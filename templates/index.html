@@ -921,7 +921,15 @@ async function submitIdea(e) {
       if (editingId || url) fd.append('attachment_url', url);
     } else {
       const file = document.getElementById('f-attachment-file').files[0];
-      if (file) fd.append('file', file);
+      if (file) {
+        if (file.size > 20 * 1024 * 1024) {
+          alert(`File "${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 20 MB. Please choose a smaller file.`);
+          btn.disabled = false;
+          btn.textContent = editingId ? 'Save Changes' : 'Add Idea';
+          return;
+        }
+        fd.append('file', file);
+      }
     }
   }
 
