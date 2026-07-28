@@ -42,7 +42,10 @@ what shows on the project page at a glance, so lead with the conclusion rather t
 building up to it.
 - detail: the full write-up in Markdown. This is the page the user opens when they \
 want the whole argument. Use headings and short paragraphs; prefer specifics over \
-adjectives.
+adjectives. Headings, lists, bold, blockquotes and GFM pipe tables all render — \
+put figures in a table when you are showing several of them side by side (scenarios, \
+a build-up, year-on-year), and keep prose in prose. Tables render with numbers \
+right-aligned automatically, so alignment markers are optional.
 
 Ground what you can in the reference data supplied. Where you are drawing on your own \
 knowledge rather than that data, say so. Where you don't know, say that plainly instead \

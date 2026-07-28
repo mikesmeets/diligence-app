@@ -20,6 +20,14 @@
     .md strong { font-weight:600; color:#111827; }
     .md hr { margin:1.5rem 0; border-color:#e5e7eb; }
     .md blockquote { border-left:3px solid #e5e7eb; padding-left:1rem; color:#4b5563; margin:.75rem 0; }
+    /* Wrapper scrolls on narrow screens so a wide table can't stretch the page. */
+    .md-table { overflow-x:auto; margin:1.25rem 0; }
+    .md table { border-collapse:collapse; width:100%; font-size:.875rem; }
+    .md th { text-align:left; font-weight:600; color:#374151; background:#f9fafb;
+             border-bottom:2px solid #e5e7eb; padding:.5rem .75rem; white-space:nowrap; }
+    .md td { border-bottom:1px solid #f3f4f6; padding:.45rem .75rem; color:#1f2937;
+             font-variant-numeric:tabular-nums; }
+    .md tbody tr:last-child td { border-bottom:0; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -101,6 +109,15 @@ function renderMd(src) {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
 
+  // Figures get right-aligned even when the model omits alignment markers,
+  // which it usually does — a column of left-ragged numbers is unreadable.
+  const NUMERIC = /^[-+(]?\s*[$€£]?\s*\d[\d,]*(\.\d+)?\s*(%|x|bps|bn|mm|tn|k)?\s*\)?$/i;
+  const cells = (row) =>
+    row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+  const isRow = (l) => /^\s*\|.*\|\s*$/.test(l || '');
+  const isSep = (l) => /^\s*\|[\s:|-]*-[\s:|-]*\|\s*$/.test(l || '');
+
+  const lines = String(src ?? '').split('\n');
   const out = [];
   let list = null, para = [];
 
@@ -111,8 +128,38 @@ function renderMd(src) {
     if (list) { out.push(`</${list}>`); list = null; }
   };
 
-  for (const raw of String(src ?? '').split('\n')) {
-    const line = raw.trimEnd();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+
+    // GFM table: a header row followed by a |---|---| separator.
+    if (isRow(line) && isSep(lines[i + 1])) {
+      flushPara(); flushList();
+      const head  = cells(line);
+      const align = cells(lines[i + 1]).map(s =>
+        /^:-+:$/.test(s) ? 'center' : /^-+:$/.test(s) ? 'right'
+        : /^:-+$/.test(s) ? 'left'  : null);
+      i += 1;
+
+      const body = [];
+      while (isRow(lines[i + 1])) body.push(cells(lines[++i]));
+
+      // Resolve one alignment per column so the header sits over its own
+      // figures. Explicit markers win; otherwise a column of numbers goes right.
+      const colAlign = head.map((_, n) => {
+        if (align[n]) return align[n];
+        const vals = body.map(r => r[n]).filter(v => v !== undefined && v !== '');
+        return vals.length && vals.every(v => NUMERIC.test(v)) ? 'right' : null;
+      });
+      const style = (n) => colAlign[n] ? ` style="text-align:${colAlign[n]}"` : '';
+
+      const th = head.map((h, n) => `<th${style(n)}>${inline(h)}</th>`).join('');
+      const tr = body.map(r =>
+        '<tr>' + r.map((c, n) => `<td${style(n)}>${inline(c)}</td>`).join('') + '</tr>'
+      ).join('');
+
+      out.push(`<div class="md-table"><table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`);
+      continue;
+    }
 
     if (!line.trim())                    { flushPara(); flushList(); continue; }
     if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flushPara(); flushList(); out.push('<hr>'); continue; }
