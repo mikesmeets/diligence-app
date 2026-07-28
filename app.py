@@ -1380,6 +1380,8 @@ def get_settings():
         'key_source':      ai.key_source(),
         'model':           ai.model(),
         'models':          [{'id': m, 'label': l} for m, l in ai.MODELS],
+        'effort':          ai.effort(),
+        'efforts':         [{'id': e, 'label': l} for e, l in ai.EFFORTS],
         'prompts':         {f: ai.prompt_for(f) for f in ai.FIELDS},
         'default_prompts': ai.DEFAULT_PROMPTS,
         'system_prompt':   ai.SYSTEM_PROMPT,
@@ -1401,11 +1403,15 @@ def save_settings():
     if data.get('model') in dict(ai.MODELS):
         db.set_setting('ai_model', data['model'])
 
+    if data.get('effort') in dict(ai.EFFORTS):
+        db.set_setting('ai_effort', data['effort'])
+
     for field, text in (data.get('prompts') or {}).items():
         if field in ai.FIELDS:
             db.set_setting(f'prompt_{field}', (text or '').strip())
 
-    return jsonify({'ok': True, 'key_source': ai.key_source(), 'model': ai.model()})
+    return jsonify({'ok': True, 'key_source': ai.key_source(),
+                    'model': ai.model(), 'effort': ai.effort()})
 
 
 @app.route('/api/stock-price')

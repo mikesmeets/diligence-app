@@ -50,15 +50,26 @@
     </p>
   </div>
 
-  <!-- Model -->
-  <div class="bg-white rounded-xl border border-gray-200 p-5">
-    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model</p>
-    <select id="f-model" onchange="saveAll()"
-      class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"></select>
-    <p class="text-xs text-gray-400 mt-2">
-      Opus 5 is the most capable and the right default for research write-ups. Sonnet 5 is
-      faster and cheaper if you're generating a lot of these.
-    </p>
+  <!-- Model + effort -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 grid md:grid-cols-2 gap-5">
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model</p>
+      <select id="f-model" onchange="saveAll()"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"></select>
+      <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+        Opus 5 is the most capable and the right default for research write-ups. Sonnet 5 is
+        faster and cheaper if you're generating a lot of these.
+      </p>
+    </div>
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Effort</p>
+      <select id="f-effort" onchange="saveAll()"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"></select>
+      <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+        How long Claude thinks before writing. Drop this to Medium if drafts are timing out —
+        Opus 5 stays strong at the lower levels.
+      </p>
+    </div>
   </div>
 
   <!-- System prompt (read-only) -->
@@ -154,6 +165,10 @@ async function load() {
   sel.innerHTML = s.models.map(m =>
     `<option value="${m.id}" ${m.id === s.model ? 'selected' : ''}>${m.label}</option>`).join('');
 
+  const eff = document.getElementById('f-effort');
+  eff.innerHTML = s.efforts.map(e =>
+    `<option value="${e.id}" ${e.id === s.effort ? 'selected' : ''}>${e.label}</option>`).join('');
+
   FIELDS.forEach(f => { document.getElementById(`p-${f}`).value = s.prompts[f] || ''; });
   clearDirty();
 }
@@ -175,7 +190,11 @@ async function post(body) {
 async function saveAll() {
   const prompts = {};
   FIELDS.forEach(f => { prompts[f] = document.getElementById(`p-${f}`).value; });
-  const r = await post({ model: document.getElementById('f-model').value, prompts });
+  const r = await post({
+    model:   document.getElementById('f-model').value,
+    effort:  document.getElementById('f-effort').value,
+    prompts,
+  });
   if (r) { clearDirty(); status('Saved', 'green'); }
 }
 

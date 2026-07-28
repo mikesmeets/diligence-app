@@ -155,6 +155,21 @@ function render() {
   document.getElementById('gen-btn').textContent = detail ? '✦ Regenerate' : '✦ Generate';
 }
 
+// A timed-out generation comes back as an HTML page from the proxy, not JSON —
+// read the body as text first so we can say what actually happened.
+async function generationError(res) {
+  const body = await res.text();
+  try {
+    return JSON.parse(body).error || `Server error ${res.status}.`;
+  } catch (e) {
+    if (res.status === 502 || res.status === 504) {
+      return 'The draft ran longer than the server allows and the request was cut off. '
+           + 'Try again, or switch to Sonnet on the Admin page — it is quicker.';
+    }
+    return `Server error ${res.status}.`;
+  }
+}
+
 async function generate() {
   const btn = document.getElementById('gen-btn');
   if (detail && !confirm(`Replace the current ${LABEL.toLowerCase()} with a fresh draft?`)) return;
@@ -164,14 +179,14 @@ async function generate() {
   btn.innerHTML = '<span class="spin">✦</span> Drafting…';
   try {
     const res = await fetch(`/api/projects/${PROJECT_ID}/generate/${FIELD}`, { method: 'POST' });
+    if (!res.ok) { alert(await generationError(res)); return; }
     const data = await res.json();
-    if (!res.ok) { alert(data.error || 'Generation failed'); return; }
     summary   = data[FIELD] || '';
     detail    = data[`${FIELD}_detail`] || '';
     generated = data[`${FIELD}_generated_at`] || '';
     render();
   } catch (e) {
-    alert('Generation failed — check the network and try again.');
+    alert(`Could not reach the server: ${e.message}`);
   } finally {
     btn.disabled = false;
     btn.textContent = original;

@@ -150,6 +150,20 @@ def model():
     return db.get_setting('ai_model') or DEFAULT_MODEL
 
 
+# Effort trades depth against latency. Opus 5 is unusually strong at the lower
+# levels, so dropping to medium is the first thing to try if drafts time out.
+EFFORTS = [
+    ('high',   'High — most thorough (slowest)'),
+    ('medium', 'Medium — good quality, noticeably faster'),
+    ('low',    'Low — quick first pass'),
+]
+
+
+def effort():
+    value = db.get_setting('ai_effort')
+    return value if value in dict(EFFORTS) else 'high'
+
+
 def prompt_for(field):
     return db.get_setting(f'prompt_{field}') or DEFAULT_PROMPTS[field]
 
@@ -189,7 +203,7 @@ def generate(field, project, context):
         'messages':   [{'role': 'user', 'content': _render(prompt_for(field), project, context)}],
         'output_config': {
             'format': {'type': 'json_schema', 'schema': _SCHEMA},
-            'effort': 'high',
+            'effort': effort(),
         },
     }
 
