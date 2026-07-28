@@ -67,6 +67,8 @@ if IS_PG:
             business_description TEXT,
             pros            TEXT,
             cons            TEXT,
+            bull_case       TEXT,
+            bear_case       TEXT,
             key_questions   TEXT,
             created_at      TEXT             NOT NULL,
             updated_at      TEXT             NOT NULL,
@@ -166,6 +168,8 @@ else:
             business_description TEXT,
             pros            TEXT,
             cons            TEXT,
+            bull_case       TEXT,
+            bear_case       TEXT,
             key_questions   TEXT,
             created_at      TEXT    NOT NULL,
             updated_at      TEXT    NOT NULL,
@@ -252,6 +256,8 @@ _PROJECT_MIGRATIONS = [
     ('pros',                 'TEXT'),
     ('cons',                 'TEXT'),
     ('key_questions',        'TEXT'),
+    ('bull_case',            'TEXT'),
+    ('bear_case',            'TEXT'),
 ]
 
 
@@ -274,8 +280,8 @@ PROJECT_COLS = (
     'name', 'ticker', 'direction', 'stage', 'thesis', 'rating',
     'idea_type_id', 'subtype_id', 'source_id', 'hat_tip_id',
     'origin_idea_id', 'current_price',
-    'business_description', 'pros', 'cons', 'key_questions',
-    'created_at', 'updated_at',
+    'business_description', 'pros', 'cons', 'bull_case', 'bear_case',
+    'key_questions', 'created_at', 'updated_at',
     'attachment_url', 'attachment_name', 'attachment_data', 'attachment_key',
 )
 

@@ -520,12 +520,16 @@ STAGES          = ['Initial View', 'Diligence', 'Conviction', 'Invested', 'Passe
 TERMINAL_STAGES = ['Invested', 'Passed']
 
 # Long-form write-up panels, edited in place on the project page.
-NOTE_FIELDS = ('business_description', 'thesis', 'pros', 'cons', 'key_questions')
+NOTE_FIELDS = (
+    'business_description', 'thesis', 'pros', 'cons',
+    'bull_case', 'bear_case', 'key_questions',
+)
 
 _PROJECT_SELECT = (
     'SELECT p.id, p.name, p.ticker, p.direction, p.stage, p.thesis, p.rating, '
     'p.current_price, p.origin_idea_id, p.created_at, p.updated_at, '
-    'p.business_description, p.pros, p.cons, p.key_questions, '
+    'p.business_description, p.pros, p.cons, p.bull_case, p.bear_case, '
+    'p.key_questions, '
     'p.attachment_url, p.attachment_name, '
     'p.idea_type_id, it.name AS idea_type_name, '
     'p.subtype_id,   st.name AS subtype_name, '
@@ -613,6 +617,8 @@ def create_project():
         data.get('business_description') or None,
         data.get('pros') or None,
         data.get('cons') or None,
+        data.get('bull_case') or None,
+        data.get('bear_case') or None,
         data.get('key_questions') or None,
         now,
         now,
@@ -985,6 +991,8 @@ def promote_idea(idea_id):
         None,   # business_description
         None,   # pros
         None,   # cons
+        None,   # bull_case
+        None,   # bear_case
         None,   # key_questions
         now,
         now,
