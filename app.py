@@ -93,6 +93,44 @@ def delete_source(source_id):
     return jsonify({'ok': True})
 
 
+@app.route('/api/subtypes', methods=['GET'])
+def get_subtypes():
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute('SELECT id, name FROM subtypes ORDER BY name')
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/subtypes', methods=['POST'])
+def create_subtype():
+    data = request.get_json(force=True)
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO subtypes (name) VALUES ({db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id, name',
+                (name,),
+            )
+            row = db.to_dict(cur.fetchone())
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO subtypes (name) VALUES ({db.PH})', (name,))
+            cur.execute(f'SELECT id, name FROM subtypes WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/subtypes/<int:subtype_id>', methods=['DELETE'])
+def delete_subtype(subtype_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'DELETE FROM subtypes WHERE id = {db.PH}', (subtype_id,))
+    return jsonify({'ok': True})
+
+
 @app.route('/api/ideas', methods=['GET'])
 def get_ideas():
     with db.get_conn() as conn:
@@ -101,10 +139,12 @@ def get_ideas():
             'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
-            'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type '
+            'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
+            'i.subtype_id, st.name AS subtype_name '
             'FROM ideas i '
-            'LEFT JOIN sources s  ON i.source_id  = s.id '
-            'LEFT JOIN sources ht ON i.hat_tip_id = ht.id '
+            'LEFT JOIN sources s   ON i.source_id  = s.id '
+            'LEFT JOIN sources ht  ON i.hat_tip_id = ht.id '
+            'LEFT JOIN subtypes st ON i.subtype_id = st.id '
             'ORDER BY i.created_at DESC'
         )
         return jsonify(db.to_dicts(cur.fetchall()))
@@ -143,6 +183,7 @@ def create_idea():
     hat_tip_id  = int(data['hat_tip_id'])  if data.get('hat_tip_id')  else None
     rating      = float(data['rating'])    if data.get('rating')      else None
     idea_type   = data.get('idea_type') or None
+    subtype_id  = int(data['subtype_id'])  if data.get('subtype_id')  else None
 
     values = (
         data['ticker'].upper(),
@@ -158,6 +199,7 @@ def create_idea():
         hat_tip_id,
         rating,
         idea_type,
+        subtype_id,
         datetime.now().isoformat(),
         attachment_url,
         attachment_name,
@@ -224,6 +266,7 @@ def update_idea(idea_id):
         hat_tip_id = int(data['hat_tip_id']) if data.get('hat_tip_id') else None
         rating     = float(data['rating'])   if data.get('rating')     else None
         idea_type  = data.get('idea_type') or None
+        subtype_id = int(data['subtype_id']) if data.get('subtype_id') else None
 
         # Always update core fields
         cur.execute(
@@ -240,7 +283,8 @@ def update_idea(idea_id):
                 source_id     = {db.PH},
                 hat_tip_id    = {db.PH},
                 rating        = {db.PH},
-                idea_type     = {db.PH}
+                idea_type     = {db.PH},
+                subtype_id    = {db.PH}
             WHERE id = {db.PH}''',
             (
                 data['ticker'].upper(),
@@ -256,6 +300,7 @@ def update_idea(idea_id):
                 hat_tip_id,
                 rating,
                 idea_type,
+                subtype_id,
                 idea_id,
             ),
         )
@@ -310,10 +355,12 @@ def update_idea(idea_id):
             f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
-            f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type '
+            f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
+            f'i.subtype_id, st.name AS subtype_name '
             f'FROM ideas i '
-            f'LEFT JOIN sources s  ON i.source_id  = s.id '
-            f'LEFT JOIN sources ht ON i.hat_tip_id = ht.id '
+            f'LEFT JOIN sources s   ON i.source_id  = s.id '
+            f'LEFT JOIN sources ht  ON i.hat_tip_id = ht.id '
+            f'LEFT JOIN subtypes st ON i.subtype_id = st.id '
             f'WHERE i.id = {db.PH}',
             (idea_id,),
         )
@@ -342,10 +389,12 @@ def idea_detail(idea_id):
             f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
-            f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type '
+            f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
+            f'i.subtype_id, st.name AS subtype_name '
             f'FROM ideas i '
-            f'LEFT JOIN sources s  ON i.source_id  = s.id '
-            f'LEFT JOIN sources ht ON i.hat_tip_id = ht.id '
+            f'LEFT JOIN sources s   ON i.source_id  = s.id '
+            f'LEFT JOIN sources ht  ON i.hat_tip_id = ht.id '
+            f'LEFT JOIN subtypes st ON i.subtype_id = st.id '
             f'WHERE i.id = {db.PH}',
             (idea_id,),
         )

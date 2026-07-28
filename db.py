@@ -35,6 +35,13 @@ if IS_PG:
         )
     """
 
+    _CREATE_SUBTYPES = """
+        CREATE TABLE IF NOT EXISTS subtypes (
+            id   SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              SERIAL PRIMARY KEY,
@@ -80,6 +87,13 @@ else:
         )
     """
 
+    _CREATE_SUBTYPES = """
+        CREATE TABLE IF NOT EXISTS subtypes (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +132,7 @@ def init():
     with get_conn() as conn:
         cur = cursor(conn)
         cur.execute(_CREATE_SOURCES)
+        cur.execute(_CREATE_SUBTYPES)
         cur.execute(_CREATE)
 
 
@@ -130,6 +145,7 @@ _MIGRATIONS = [
     ('hat_tip_id',      'INTEGER'),
     ('rating',          'REAL'),
     ('idea_type',       'TEXT'),
+    ('subtype_id',      'INTEGER'),
 ]
 
 
@@ -153,8 +169,8 @@ def insert_idea(conn, values: tuple) -> dict:
     cols = (
         'ticker', 'idea_date', 'idea_price', 'initial_date', 'initial_price',
         'current_price', 'thesis', 'direction', 'asset_class', 'source_id',
-        'hat_tip_id', 'rating', 'idea_type', 'created_at', 'attachment_url',
-        'attachment_name', 'attachment_data', 'attachment_key',
+        'hat_tip_id', 'rating', 'idea_type', 'subtype_id', 'created_at',
+        'attachment_url', 'attachment_name', 'attachment_data', 'attachment_key',
     )
     col_list = ', '.join(cols)
     ph_list  = ', '.join([PH] * len(cols))
