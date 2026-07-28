@@ -101,7 +101,7 @@ def get_ideas():
             'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
-            'i.hat_tip_id, ht.name AS hat_tip_name '
+            'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type '
             'FROM ideas i '
             'LEFT JOIN sources s  ON i.source_id  = s.id '
             'LEFT JOIN sources ht ON i.hat_tip_id = ht.id '
@@ -141,6 +141,8 @@ def create_idea():
 
     source_id   = int(data['source_id'])   if data.get('source_id')   else None
     hat_tip_id  = int(data['hat_tip_id'])  if data.get('hat_tip_id')  else None
+    rating      = float(data['rating'])    if data.get('rating')      else None
+    idea_type   = data.get('idea_type') or None
 
     values = (
         data['ticker'].upper(),
@@ -154,6 +156,8 @@ def create_idea():
         data['asset_class'],
         source_id,
         hat_tip_id,
+        rating,
+        idea_type,
         datetime.now().isoformat(),
         attachment_url,
         attachment_name,
@@ -218,6 +222,8 @@ def update_idea(idea_id):
 
         source_id  = int(data['source_id'])  if data.get('source_id')  else None
         hat_tip_id = int(data['hat_tip_id']) if data.get('hat_tip_id') else None
+        rating     = float(data['rating'])   if data.get('rating')     else None
+        idea_type  = data.get('idea_type') or None
 
         # Always update core fields
         cur.execute(
@@ -232,7 +238,9 @@ def update_idea(idea_id):
                 direction     = {db.PH},
                 asset_class   = {db.PH},
                 source_id     = {db.PH},
-                hat_tip_id    = {db.PH}
+                hat_tip_id    = {db.PH},
+                rating        = {db.PH},
+                idea_type     = {db.PH}
             WHERE id = {db.PH}''',
             (
                 data['ticker'].upper(),
@@ -246,6 +254,8 @@ def update_idea(idea_id):
                 data['asset_class'],
                 source_id,
                 hat_tip_id,
+                rating,
+                idea_type,
                 idea_id,
             ),
         )
@@ -300,7 +310,7 @@ def update_idea(idea_id):
             f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
-            f'i.hat_tip_id, ht.name AS hat_tip_name '
+            f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type '
             f'FROM ideas i '
             f'LEFT JOIN sources s  ON i.source_id  = s.id '
             f'LEFT JOIN sources ht ON i.hat_tip_id = ht.id '
@@ -332,7 +342,7 @@ def idea_detail(idea_id):
             f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
-            f'i.hat_tip_id, ht.name AS hat_tip_name '
+            f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type '
             f'FROM ideas i '
             f'LEFT JOIN sources s  ON i.source_id  = s.id '
             f'LEFT JOIN sources ht ON i.hat_tip_id = ht.id '

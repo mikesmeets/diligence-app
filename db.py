@@ -128,6 +128,8 @@ _MIGRATIONS = [
     ('source_id',       'INTEGER'),
     ('attachment_key',  'TEXT'),   # bucket object key (replaces attachment_data for new uploads)
     ('hat_tip_id',      'INTEGER'),
+    ('rating',          'REAL'),
+    ('idea_type',       'TEXT'),
 ]
 
 
@@ -151,8 +153,8 @@ def insert_idea(conn, values: tuple) -> dict:
     cols = (
         'ticker', 'idea_date', 'idea_price', 'initial_date', 'initial_price',
         'current_price', 'thesis', 'direction', 'asset_class', 'source_id',
-        'hat_tip_id', 'created_at', 'attachment_url', 'attachment_name',
-        'attachment_data', 'attachment_key',
+        'hat_tip_id', 'rating', 'idea_type', 'created_at', 'attachment_url',
+        'attachment_name', 'attachment_data', 'attachment_key',
     )
     col_list = ', '.join(cols)
     ph_list  = ', '.join([PH] * len(cols))
