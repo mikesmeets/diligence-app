@@ -378,19 +378,24 @@ async function saveNote(f) {
   }
 }
 
-// A timed-out generation comes back as an HTML page from the proxy, not JSON —
-// read the body as text first so we can say what actually happened.
+// A timed-out generation comes back as an HTML page from the proxy, not JSON,
+// so read the body as text and parse defensively.
 async function generationError(res) {
   const body = await res.text();
-  try {
-    return JSON.parse(body).error || `Server error ${res.status}.`;
-  } catch (e) {
-    if (res.status === 502 || res.status === 504) {
-      return 'The draft ran longer than the server allows and the request was cut off. '
-           + 'Try again, or switch to Sonnet on the Admin page — it is quicker.';
-    }
-    return `Server error ${res.status}.`;
+  let payload = null;
+  try { payload = JSON.parse(body); } catch (e) { /* not JSON — proxy error page */ }
+
+  if (payload && payload.error) {
+    // The draft survived but the save didn't — the detail page can show it.
+    return payload.unsaved
+      ? `${payload.error}\n\nOpen the full write-up page and regenerate there to recover the draft.`
+      : payload.error;
   }
+  if (res.status === 502 || res.status === 504) {
+    return 'The draft ran longer than the server allows and the request was cut off. '
+         + 'Try again, or switch to Sonnet on the Admin page — it is quicker.';
+  }
+  return `Server error ${res.status}.`;
 }
 
 async function generateNote(field) {

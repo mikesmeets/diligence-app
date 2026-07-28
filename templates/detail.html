@@ -155,19 +155,19 @@ function render() {
   document.getElementById('gen-btn').textContent = detail ? '✦ Regenerate' : '✦ Generate';
 }
 
-// A timed-out generation comes back as an HTML page from the proxy, not JSON —
-// read the body as text first so we can say what actually happened.
-async function generationError(res) {
+// A timed-out generation comes back as an HTML page from the proxy, not JSON,
+// so read the body as text and parse defensively.
+async function readFailure(res) {
   const body = await res.text();
-  try {
-    return JSON.parse(body).error || `Server error ${res.status}.`;
-  } catch (e) {
-    if (res.status === 502 || res.status === 504) {
-      return 'The draft ran longer than the server allows and the request was cut off. '
-           + 'Try again, or switch to Sonnet on the Admin page — it is quicker.';
-    }
-    return `Server error ${res.status}.`;
+  let payload = null;
+  try { payload = JSON.parse(body); } catch (e) { /* not JSON — proxy error page */ }
+
+  if (payload && payload.error) return { message: payload.error, unsaved: payload.unsaved };
+  if (res.status === 502 || res.status === 504) {
+    return { message: 'The draft ran longer than the server allows and the request was cut off. '
+                    + 'Try again, or switch to Sonnet on the Admin page — it is quicker.' };
   }
+  return { message: `Server error ${res.status}.` };
 }
 
 async function generate() {
@@ -179,7 +179,20 @@ async function generate() {
   btn.innerHTML = '<span class="spin">✦</span> Drafting…';
   try {
     const res = await fetch(`/api/projects/${PROJECT_ID}/generate/${FIELD}`, { method: 'POST' });
-    if (!res.ok) { alert(await generationError(res)); return; }
+    if (!res.ok) {
+      const fail = await readFailure(res);
+      // The draft survived but the save didn't — show it so the work isn't lost.
+      if (fail.unsaved) {
+        summary = fail.unsaved.summary || '';
+        detail  = fail.unsaved.detail  || '';
+        render();
+        document.getElementById('generated-at').textContent = 'NOT SAVED — copy this before you leave';
+        alert(`${fail.message}\n\nThe draft is shown on the page but has not been saved.`);
+      } else {
+        alert(fail.message);
+      }
+      return;
+    }
     const data = await res.json();
     summary   = data[FIELD] || '';
     detail    = data[`${FIELD}_detail`] || '';
@@ -190,7 +203,6 @@ async function generate() {
   } finally {
     btn.disabled = false;
     btn.textContent = original;
-    render();
   }
 }
 

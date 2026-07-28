@@ -1,7 +1,10 @@
+import logging
 import os
 import re
 import time
+import traceback
 from flask import Flask, request, jsonify, render_template
+from werkzeug.exceptions import HTTPException
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
@@ -11,8 +14,26 @@ import storage
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB upload limit
+logging.basicConfig(level=logging.INFO)
 db.init()
 db.migrate()
+
+
+@app.errorhandler(Exception)
+def handle_unexpected(exc):
+    """Return the actual failure as JSON on API routes.
+
+    Without this an unhandled exception becomes an HTML 500 page, which the
+    client can't parse and reports as a bare status code — the error that
+    matters is only in the server log. This is a single-user app, so echoing
+    the exception to that user costs nothing and saves a redeploy per bug.
+    """
+    if isinstance(exc, HTTPException):
+        return exc
+    app.logger.error('Unhandled error on %s\n%s', request.path, traceback.format_exc())
+    if request.path.startswith('/api/'):
+        return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 500
+    return f'{type(exc).__name__}: {exc}', 500
 
 
 def _seed_idea_types():
@@ -1337,16 +1358,26 @@ def generate_writeup(project_id, field):
     except Exception as exc:
         return jsonify({'error': f'Generation failed: {exc}'}), 502
 
+    # Saving is separated from generating so a write failure reports itself as
+    # such — and hands back the draft rather than throwing away work already
+    # paid for.
     now = datetime.now().isoformat()
-    with db.get_conn() as conn:
-        cur = db.cursor(conn)
-        cur.execute(
-            f'UPDATE projects SET {field} = {db.PH}, {field}_detail = {db.PH}, '
-            f'{field}_generated_at = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
-            (result['summary'], result['detail'], now, now, project_id),
-        )
-        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
-        row = db.to_dict(cur.fetchone())
+    try:
+        with db.get_conn() as conn:
+            cur = db.cursor(conn)
+            cur.execute(
+                f'UPDATE projects SET {field} = {db.PH}, {field}_detail = {db.PH}, '
+                f'{field}_generated_at = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
+                (result['summary'], result['detail'], now, now, project_id),
+            )
+            cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+            row = db.to_dict(cur.fetchone())
+    except Exception as exc:
+        app.logger.error('Saving %s failed\n%s', field, traceback.format_exc())
+        return jsonify({
+            'error': f'The draft was written but saving it failed: {type(exc).__name__}: {exc}',
+            'unsaved': result,
+        }), 500
     return jsonify(row)
 
 
