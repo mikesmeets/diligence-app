@@ -275,7 +275,10 @@ def create_idea():
         raw = file_obj.read()
         if storage.ENABLED:
             try:
-                attachment_key = storage.upload(raw, file_obj.filename)
+                attachment_key = storage.upload(
+                    raw, file_obj.filename,
+                    parts=_idea_folder(data['idea_date'], data['ticker']),
+                )
             except Exception as exc:
                 return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
         else:
@@ -429,7 +432,10 @@ def update_idea(idea_id):
                 try:
                     if old_key:
                         storage.delete(old_key)
-                    new_key = storage.upload(raw, file_obj.filename)
+                    new_key = storage.upload(
+                        raw, file_obj.filename,
+                        parts=_idea_folder(data['idea_date'], data['ticker']),
+                    )
                 except Exception as exc:
                     return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
                 cur.execute(
@@ -623,7 +629,9 @@ def create_project():
         raw = file_obj.read()
         if storage.ENABLED:
             try:
-                attachment_key = storage.upload(raw, file_obj.filename)
+                attachment_key = storage.upload(
+                    raw, file_obj.filename, parts=_project_folder(data),
+                )
             except Exception as exc:
                 return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
         else:
@@ -726,7 +734,9 @@ def update_project(project_id):
                 try:
                     if old_key:
                         storage.delete(old_key)
-                    new_key = storage.upload(raw, file_obj.filename)
+                    new_key = storage.upload(
+                        raw, file_obj.filename, parts=_project_folder(data),
+                    )
                 except Exception as exc:
                     return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
                 cur.execute(_set_att, (None, file_obj.filename, None, new_key, project_id))
@@ -1320,8 +1330,12 @@ def _project_exists(project_id):
         return db.to_dict(cur.fetchone())
 
 
-def _store_upload(file_obj):
-    """Upload one file to the bucket. Returns (info, None) or (None, response)."""
+def _store_upload(file_obj, parts=None, rename=None):
+    """Upload one file to the bucket. Returns (info, None) or (None, response).
+
+    `parts`  is the folder chain the object lands under — see storage.build_key.
+    `rename` overrides the stored object name; the row keeps the original.
+    """
     if not file_obj or not file_obj.filename:
         return None, (jsonify({'error': 'No file supplied'}), 400)
     raw = file_obj.read()
@@ -1331,10 +1345,22 @@ def _store_upload(file_obj):
                      f'({len(raw) / 1024 / 1024:.1f} MB).'
         }), 413)
     try:
-        key = storage.upload(raw, file_obj.filename)
+        key = storage.upload(raw, rename or file_obj.filename, parts=parts)
     except Exception as exc:
         return None, (jsonify({'error': f'Upload failed: {exc}'}), 502)
     return {'filename': file_obj.filename, 'object_key': key, 'size_bytes': len(raw)}, None
+
+
+def _project_folder(project):
+    """Folder chain for a project's files: projects/<name>/<section>."""
+    return ['projects', project.get('name') or f"project {project.get('id')}"]
+
+
+def _idea_folder(idea_date, ticker):
+    """Ideas live under a dated, tickered folder: ideas/2026-03-14 AAP."""
+    stamp = (idea_date or '')[:10]
+    label = ' '.join(p for p in (stamp, (ticker or '').upper()) if p) or 'undated'
+    return ['ideas', label]
 
 
 def _redirect_to_file(object_key, filename, force_download=False):
@@ -1395,9 +1421,13 @@ def create_note(project_id):
     if files and (missing := _bucket_missing()):
         return missing
 
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+
     stored = []
     for f in files:
-        info, err = _store_upload(f)
+        info, err = _store_upload(f, parts=_project_folder(project) + ['notes'])
         if err:
             _delete_keys(s['object_key'] for s in stored)   # don't orphan objects
             return err
@@ -1465,7 +1495,10 @@ def add_note_attachment(note_id):
     if not note:
         return jsonify({'error': 'Note not found'}), 404
 
-    info, err = _store_upload(request.files.get('file'))
+    project = _project_exists(note['project_id'])
+    info, err = _store_upload(
+        request.files.get('file'), parts=_project_folder(project) + ['notes'],
+    )
     if err:
         return err
 
@@ -1573,8 +1606,13 @@ def get_documents(project_id):
 def create_document(project_id):
     if missing := _bucket_missing():
         return missing
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
 
-    info, err = _store_upload(request.files.get('file'))
+    info, err = _store_upload(
+        request.files.get('file'), parts=_project_folder(project) + ['documents'],
+    )
     if err:
         return err
 
@@ -1669,16 +1707,16 @@ def get_model_versions(project_id):
 def create_model_version(project_id):
     if missing := _bucket_missing():
         return missing
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
 
-    info, err = _store_upload(request.files.get('file'))
-    if err:
-        return err
-
-    now = datetime.now().isoformat()
+    # Claim the version number before uploading, so it can go in the object name.
+    # Numbers are issued from a high-water mark, never recomputed from the live
+    # rows — deleting v3 must not hand "v3" to a later file. A failed upload
+    # burns a number, which is the right trade for never reusing one.
     with db.get_conn() as conn:
         cur = db.cursor(conn)
-        # Version numbers are issued from a high-water mark, never recomputed
-        # from the live rows — deleting v3 must not hand "v3" to a later file.
         cur.execute(
             f'SELECT COALESCE(MAX(version), 0) AS v FROM model_versions '
             f'WHERE project_id = {db.PH}', (project_id,),
@@ -1695,7 +1733,21 @@ def create_model_version(project_id):
             f'UPDATE projects SET model_version_seq = {db.PH} WHERE id = {db.PH}',
             (version, project_id),
         )
-        label = (request.form.get('label') or '').strip() or None
+
+    upload = request.files.get('file')
+    original = upload.filename if upload else ''
+    info, err = _store_upload(
+        upload, parts=_project_folder(project) + ['model'],
+        # v3 AAP_model.xlsx — sorts and reads correctly in a bucket listing.
+        rename=f'v{version} {original}' if original else None,
+    )
+    if err:
+        return err
+
+    now   = datetime.now().isoformat()
+    label = (request.form.get('label') or '').strip() or None
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
         vid = db.insert_id(
             cur, 'model_versions',
             ('project_id', 'version', 'label', 'filename', 'object_key',
