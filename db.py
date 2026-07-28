@@ -49,6 +49,30 @@ if IS_PG:
         )
     """
 
+    _CREATE_PROJECTS = """
+        CREATE TABLE IF NOT EXISTS projects (
+            id              SERIAL PRIMARY KEY,
+            name            TEXT             NOT NULL,
+            ticker          TEXT,
+            direction       TEXT,
+            stage           TEXT             NOT NULL,
+            thesis          TEXT,
+            rating          DOUBLE PRECISION,
+            idea_type_id    INTEGER          REFERENCES idea_types(id) ON DELETE SET NULL,
+            subtype_id      INTEGER          REFERENCES subtypes(id)   ON DELETE SET NULL,
+            source_id       INTEGER          REFERENCES sources(id)    ON DELETE SET NULL,
+            hat_tip_id      INTEGER          REFERENCES sources(id)    ON DELETE SET NULL,
+            origin_idea_id  INTEGER,
+            current_price   DOUBLE PRECISION,
+            created_at      TEXT             NOT NULL,
+            updated_at      TEXT             NOT NULL,
+            attachment_url  TEXT,
+            attachment_name TEXT,
+            attachment_data BYTEA,
+            attachment_key  TEXT
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              SERIAL PRIMARY KEY,
@@ -108,6 +132,30 @@ else:
         )
     """
 
+    _CREATE_PROJECTS = """
+        CREATE TABLE IF NOT EXISTS projects (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT    NOT NULL,
+            ticker          TEXT,
+            direction       TEXT,
+            stage           TEXT    NOT NULL,
+            thesis          TEXT,
+            rating          REAL,
+            idea_type_id    INTEGER REFERENCES idea_types(id) ON DELETE SET NULL,
+            subtype_id      INTEGER REFERENCES subtypes(id)   ON DELETE SET NULL,
+            source_id       INTEGER REFERENCES sources(id)    ON DELETE SET NULL,
+            hat_tip_id      INTEGER REFERENCES sources(id)    ON DELETE SET NULL,
+            origin_idea_id  INTEGER,
+            current_price   REAL,
+            created_at      TEXT    NOT NULL,
+            updated_at      TEXT    NOT NULL,
+            attachment_url  TEXT,
+            attachment_name TEXT,
+            attachment_data BLOB,
+            attachment_key  TEXT
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +197,7 @@ def init():
         cur.execute(_CREATE_SUBTYPES)
         cur.execute(_CREATE_IDEA_TYPES)
         cur.execute(_CREATE)
+        cur.execute(_CREATE_PROJECTS)
 
 
 _MIGRATIONS = [
@@ -177,6 +226,35 @@ def migrate():
                     cur.execute(f'ALTER TABLE ideas ADD COLUMN {col} {typ}')
                 except Exception:
                     pass  # column already exists
+
+
+PROJECT_COLS = (
+    'name', 'ticker', 'direction', 'stage', 'thesis', 'rating',
+    'idea_type_id', 'subtype_id', 'source_id', 'hat_tip_id',
+    'origin_idea_id', 'current_price', 'created_at', 'updated_at',
+    'attachment_url', 'attachment_name', 'attachment_data', 'attachment_key',
+)
+
+
+def insert_project(conn, values: tuple) -> dict:
+    """INSERT a project row and return it as a dict. values matches PROJECT_COLS."""
+    col_list = ', '.join(PROJECT_COLS)
+    ph_list  = ', '.join([PH] * len(PROJECT_COLS))
+    cur = cursor(conn)
+    if IS_PG:
+        from psycopg2 import Binary
+        values = tuple(Binary(v) if isinstance(v, (bytes, bytearray)) else v for v in values)
+        cur.execute(
+            f'INSERT INTO projects ({col_list}) VALUES ({ph_list}) RETURNING *',
+            values,
+        )
+        row = to_dict(cur.fetchone())
+    else:
+        cur.execute(f'INSERT INTO projects ({col_list}) VALUES ({ph_list})', values)
+        cur.execute('SELECT * FROM projects WHERE id = ?', (cur.lastrowid,))
+        row = to_dict(cur.fetchone())
+    row.pop('attachment_data', None)
+    return row
 
 
 def insert_idea(conn, values: tuple) -> dict:

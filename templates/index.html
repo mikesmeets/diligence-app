@@ -18,7 +18,10 @@
   <div class="max-w-screen-2xl mx-auto flex items-center justify-between">
     <div>
       <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Diligence App</h1>
-      <p class="text-sm text-gray-400 mt-0.5">Investment Idea Tracker</p>
+      <nav class="flex gap-4 mt-1.5">
+        <a href="/" class="text-sm font-semibold text-gray-900 border-b-2 border-blue-600 pb-0.5">Collected Ideas</a>
+        <a href="/projects" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Projects</a>
+      </nav>
     </div>
     <div class="flex items-center gap-3">
       <span id="last-refreshed" class="text-xs text-gray-400"></span>
@@ -793,6 +796,18 @@ async function loadIdeas() {
   render();
 }
 
+async function promoteIdea(id, ticker) {
+  if (!confirm(`Start a project from ${ticker}? It'll begin at Initial View, and the collected idea stays put.`)) return;
+  const res = await fetch(`/api/ideas/${id}/promote`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json();
+    alert(err.error || 'Failed to promote idea');
+    return;
+  }
+  const project = await res.json();
+  window.location.href = `/projects/${project.id}`;
+}
+
 async function deleteIdea(id, ticker) {
   if (!confirm(`Delete idea for ${ticker}?`)) return;
   await fetch(`/api/ideas/${id}`, { method: 'DELETE' });
@@ -925,6 +940,11 @@ function render() {
       </td>
       <td class="px-4 py-3">${fmtAttachment(idea)}</td>
       <td class="px-4 py-3 whitespace-nowrap" onclick="event.stopPropagation()">
+        <button onclick="promoteIdea(${idea.id}, '${escHtml(idea.ticker)}')"
+          title="Start a project from this idea"
+          class="text-gray-400 hover:text-blue-600 text-xs transition-colors mr-3">
+          Promote
+        </button>
         <button onclick="openEditModal(${idea.id})"
           class="text-gray-400 hover:text-blue-600 text-xs transition-colors mr-3">
           Edit

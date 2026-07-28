@@ -510,6 +510,327 @@ def refresh_single_price(idea_id):
     return jsonify({'price': price})
 
 
+# ── Projects ─────────────────────────────────────────────────────────────────
+# Your own work-in-progress theses, tracked through a pipeline. Distinct from
+# the collected ideas above, which are things you're monitoring from others.
+
+STAGES          = ['Initial View', 'Diligence', 'Conviction', 'Invested', 'Passed']
+TERMINAL_STAGES = ['Invested', 'Passed']
+
+_PROJECT_SELECT = (
+    'SELECT p.id, p.name, p.ticker, p.direction, p.stage, p.thesis, p.rating, '
+    'p.current_price, p.origin_idea_id, p.created_at, p.updated_at, '
+    'p.attachment_url, p.attachment_name, '
+    'p.idea_type_id, it.name AS idea_type_name, '
+    'p.subtype_id,   st.name AS subtype_name, '
+    'p.source_id,    s.name  AS source_name, '
+    'p.hat_tip_id,   ht.name AS hat_tip_name '
+    'FROM projects p '
+    'LEFT JOIN idea_types it ON p.idea_type_id = it.id '
+    'LEFT JOIN subtypes st   ON p.subtype_id   = st.id '
+    'LEFT JOIN sources s     ON p.source_id    = s.id '
+    'LEFT JOIN sources ht    ON p.hat_tip_id   = ht.id '
+)
+
+
+def _project_form():
+    """Pull the common project fields off a JSON or multipart request."""
+    if request.content_type and 'multipart' in request.content_type:
+        data, file_obj = request.form, request.files.get('file')
+    else:
+        data, file_obj = request.get_json(force=True), None
+    return data, file_obj
+
+
+def _opt_int(data, key):
+    return int(data[key]) if data.get(key) else None
+
+
+@app.route('/projects')
+def projects_page():
+    return render_template('projects.html', stages=STAGES, terminal=TERMINAL_STAGES)
+
+
+@app.route('/api/projects', methods=['GET'])
+def get_projects():
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(_PROJECT_SELECT + 'ORDER BY p.updated_at DESC')
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/projects', methods=['POST'])
+def create_project():
+    data, file_obj = _project_form()
+
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+
+    stage = data.get('stage') or STAGES[0]
+    if stage not in STAGES:
+        return jsonify({'error': f'invalid stage: {stage}'}), 400
+
+    attachment_url  = data.get('attachment_url') or None
+    attachment_name = None
+    attachment_data = None
+    attachment_key  = None
+    if file_obj and file_obj.filename:
+        attachment_name = file_obj.filename
+        raw = file_obj.read()
+        if storage.ENABLED:
+            try:
+                attachment_key = storage.upload(raw, file_obj.filename)
+            except Exception as exc:
+                return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
+        else:
+            attachment_data = raw
+
+    ticker = (data.get('ticker') or '').strip().upper() or None
+    now    = datetime.now().isoformat()
+
+    values = (
+        name,
+        ticker,
+        data.get('direction') or None,
+        stage,
+        data.get('thesis') or None,
+        float(data['rating']) if data.get('rating') else None,
+        _opt_int(data, 'idea_type_id'),
+        _opt_int(data, 'subtype_id'),
+        _opt_int(data, 'source_id'),
+        _opt_int(data, 'hat_tip_id'),
+        _opt_int(data, 'origin_idea_id'),
+        fetch_current_price(ticker) if ticker else None,
+        now,
+        now,
+        attachment_url,
+        attachment_name,
+        attachment_data,
+        attachment_key,
+    )
+    with db.get_conn() as conn:
+        row = db.insert_project(conn, values)
+    return jsonify(row), 201
+
+
+@app.route('/api/projects/<int:project_id>', methods=['PUT'])
+def update_project(project_id):
+    data, file_obj = _project_form()
+
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+
+    stage = data.get('stage') or STAGES[0]
+    if stage not in STAGES:
+        return jsonify({'error': f'invalid stage: {stage}'}), 400
+
+    ticker = (data.get('ticker') or '').strip().upper() or None
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'''UPDATE projects SET
+                name         = {db.PH},
+                ticker       = {db.PH},
+                direction    = {db.PH},
+                stage        = {db.PH},
+                thesis       = {db.PH},
+                rating       = {db.PH},
+                idea_type_id = {db.PH},
+                subtype_id   = {db.PH},
+                source_id    = {db.PH},
+                hat_tip_id   = {db.PH},
+                updated_at   = {db.PH}
+            WHERE id = {db.PH}''',
+            (
+                name,
+                ticker,
+                data.get('direction') or None,
+                stage,
+                data.get('thesis') or None,
+                float(data['rating']) if data.get('rating') else None,
+                _opt_int(data, 'idea_type_id'),
+                _opt_int(data, 'subtype_id'),
+                _opt_int(data, 'source_id'),
+                _opt_int(data, 'hat_tip_id'),
+                datetime.now().isoformat(),
+                project_id,
+            ),
+        )
+
+        cur.execute(f'SELECT attachment_key FROM projects WHERE id = {db.PH}', (project_id,))
+        old_key = (db.to_dict(cur.fetchone()) or {}).get('attachment_key')
+
+        _set_att = (
+            f'UPDATE projects SET attachment_url={db.PH}, attachment_name={db.PH}, '
+            f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}'
+        )
+        if data.get('clear_attachment') == 'true':
+            if old_key:
+                storage.delete(old_key)
+            cur.execute(_set_att, (None, None, None, None, project_id))
+        elif file_obj and file_obj.filename:
+            raw = file_obj.read()
+            if storage.ENABLED:
+                try:
+                    if old_key:
+                        storage.delete(old_key)
+                    new_key = storage.upload(raw, file_obj.filename)
+                except Exception as exc:
+                    return jsonify({'error': f'Bucket upload failed: {exc}'}), 502
+                cur.execute(_set_att, (None, file_obj.filename, None, new_key, project_id))
+            else:
+                blob = db._pg_binary(raw) if db.IS_PG else raw
+                cur.execute(_set_att, (None, file_obj.filename, blob, None, project_id))
+        elif 'attachment_url' in data:
+            if old_key:
+                storage.delete(old_key)
+            cur.execute(_set_att, (data.get('attachment_url') or None, None, None, None, project_id))
+
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        row = db.to_dict(cur.fetchone())
+
+    return jsonify(row)
+
+
+@app.route('/api/projects/<int:project_id>/stage', methods=['PATCH'])
+def set_project_stage(project_id):
+    """Move a project to a different stage — used by the board's inline control."""
+    stage = (request.get_json(force=True).get('stage') or '').strip()
+    if stage not in STAGES:
+        return jsonify({'error': f'invalid stage: {stage}'}), 400
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE projects SET stage = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
+            (stage, datetime.now().isoformat(), project_id),
+        )
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
+@app.route('/api/projects/<int:project_id>', methods=['DELETE'])
+def delete_project(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT attachment_key FROM projects WHERE id = {db.PH}', (project_id,))
+        row = db.to_dict(cur.fetchone()) or {}
+        if row.get('attachment_key'):
+            storage.delete(row['attachment_key'])
+        cur.execute(f'DELETE FROM projects WHERE id = {db.PH}', (project_id,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/projects/<int:project_id>/attachment')
+def get_project_attachment(project_id):
+    from flask import send_file, redirect
+    from io import BytesIO
+    import mimetypes
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT attachment_name, attachment_data, attachment_key '
+            f'FROM projects WHERE id = {db.PH}',
+            (project_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+
+    if not row or (not row.get('attachment_key') and not row.get('attachment_data')):
+        return jsonify({'error': 'No file attachment'}), 404
+
+    if row.get('attachment_key'):
+        return redirect(storage.presigned_url(row['attachment_key']))
+
+    data = row['attachment_data']
+    if isinstance(data, memoryview):
+        data = bytes(data)
+    mime = mimetypes.guess_type(row['attachment_name'])[0] or 'application/octet-stream'
+    return send_file(
+        BytesIO(data),
+        download_name=row['attachment_name'],
+        as_attachment=False,
+        mimetype=mime,
+    )
+
+
+@app.route('/api/projects/<int:project_id>/refresh-price', methods=['POST'])
+def refresh_project_price(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT ticker FROM projects WHERE id = {db.PH}', (project_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    if not row['ticker']:
+        return jsonify({'error': 'Project has no ticker'}), 400
+    price = fetch_current_price(row['ticker'])
+    if price is None:
+        return jsonify({'error': f'Could not fetch price for {row["ticker"]}'}), 502
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE projects SET current_price = {db.PH} WHERE id = {db.PH}',
+            (price, project_id),
+        )
+    return jsonify({'price': price})
+
+
+@app.route('/api/ideas/<int:idea_id>/promote', methods=['POST'])
+def promote_idea(idea_id):
+    """Spin a collected idea into a project you're actively working on."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT ticker, direction, thesis, rating, idea_type_id, subtype_id, '
+            f'source_id, hat_tip_id, current_price FROM ideas WHERE id = {db.PH}',
+            (idea_id,),
+        )
+        idea = db.to_dict(cur.fetchone())
+    if not idea:
+        return jsonify({'error': 'Idea not found'}), 404
+
+    now = datetime.now().isoformat()
+    values = (
+        idea['ticker'],
+        idea['ticker'],
+        idea['direction'],
+        STAGES[0],
+        idea['thesis'],
+        idea['rating'],
+        idea['idea_type_id'],
+        idea['subtype_id'],
+        idea['source_id'],
+        idea['hat_tip_id'],
+        idea_id,
+        idea['current_price'],
+        now,
+        now,
+        None, None, None, None,
+    )
+    with db.get_conn() as conn:
+        row = db.insert_project(conn, values)
+    return jsonify(row), 201
+
+
+@app.route('/projects/<int:project_id>')
+def project_detail(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        project = db.to_dict(cur.fetchone())
+    if not project:
+        return 'Project not found', 404
+    return render_template(
+        'project.html', project=project, stages=STAGES, terminal=TERMINAL_STAGES
+    )
+
+
 @app.route('/api/stock-price')
 def stock_price():
     ticker = request.args.get('ticker', '').strip().upper()

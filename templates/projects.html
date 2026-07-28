@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Projects — Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .spin { animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-screen-2xl mx-auto flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Diligence App</h1>
+      <nav class="flex gap-4 mt-1.5">
+        <a href="/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Collected Ideas</a>
+        <a href="/projects" class="text-sm font-semibold text-gray-900 border-b-2 border-blue-600 pb-0.5">Projects</a>
+      </nav>
+    </div>
+    <button onclick="openModal()"
+      class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
+      + New Project
+    </button>
+  </div>
+</header>
+
+<!-- ── Board ──────────────────────────────────────────────────────────── -->
+<main class="max-w-screen-2xl mx-auto px-6 py-8">
+  <div id="board" class="flex gap-4 overflow-x-auto pb-4 items-start"></div>
+  <div id="empty-state" class="hidden text-center py-24 text-gray-400">
+    <div class="text-5xl mb-4">🔬</div>
+    <p class="text-lg font-medium text-gray-500">No projects yet</p>
+    <p class="text-sm mt-1">Start one from scratch, or promote a collected idea you want to work on.</p>
+  </div>
+</main>
+
+<!-- ── Project Modal ──────────────────────────────────────────────────── -->
+<div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white z-10">
+      <h2 id="modal-title" class="text-lg font-semibold text-gray-900">New Project</h2>
+      <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <form id="project-form" onsubmit="submitProject(event)" class="px-6 py-5 space-y-4">
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Project Name</label>
+        <input id="f-name" type="text" autocomplete="off"
+          placeholder="Company, theme, or situation"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        <p id="err-name" class="hidden text-red-500 text-xs mt-1"></p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Ticker <span class="font-normal text-gray-400">(optional)</span></label>
+          <input id="f-ticker" type="text" autocomplete="off"
+            oninput="this.value=this.value.toUpperCase()" placeholder="e.g. AAPL"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Direction <span class="font-normal text-gray-400">(optional)</span></label>
+          <select id="f-direction"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            <option value="">Undecided</option>
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Stage</label>
+          <select id="f-stage"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            {% for s in stages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Rating <span class="font-normal text-gray-400">(1–5, optional)</span></label>
+          <input id="f-rating" type="number" min="1" max="5" step="0.5" placeholder="e.g. 3.5"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Idea Type <span class="font-normal text-gray-400">(optional)</span></label>
+          <select id="f-idea-type"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            <option value="">— None —</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Sub-type <span class="font-normal text-gray-400">(optional)</span></label>
+          <select id="f-subtype"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            <option value="">None</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Source <span class="font-normal text-gray-400">(optional)</span></label>
+          <select id="f-source"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            <option value="">No source</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Hat Tip <span class="font-normal text-gray-400">(optional)</span></label>
+          <select id="f-hat-tip"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+            <option value="">None</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Thesis / Notes <span class="font-normal text-gray-400">(optional)</span></label>
+        <textarea id="f-thesis" rows="4"
+          placeholder="What's the view you're developing?"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+      </div>
+
+      <!-- Attachment -->
+      <div class="border border-gray-200 rounded-lg p-3 space-y-2">
+        <p class="text-sm font-medium text-gray-700">Attachment <span class="font-normal text-gray-400">(optional)</span></p>
+
+        <div id="existing-attachment-strip" class="hidden flex items-center justify-between bg-gray-50 rounded-md px-3 py-2">
+          <span id="existing-attachment-label" class="text-xs text-gray-600 truncate max-w-[260px]"></span>
+          <label class="flex items-center gap-1.5 cursor-pointer select-none ml-3 flex-shrink-0">
+            <input type="checkbox" id="clear-attachment" class="accent-red-500" />
+            <span class="text-xs text-red-600">Remove</span>
+          </label>
+        </div>
+
+        <div class="flex gap-4">
+          <label class="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="radio" name="attach-type" value="url" checked onchange="onAttachTypeChange()" class="accent-blue-600" />
+            <span class="text-sm">URL</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="radio" name="attach-type" value="file" onchange="onAttachTypeChange()" class="accent-blue-600" />
+            <span class="text-sm">File</span>
+          </label>
+        </div>
+        <div id="attach-url-row">
+          <input id="f-attachment-url" type="url" placeholder="https://..."
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div id="attach-file-row" class="hidden">
+          <input id="f-attachment-file" type="file"
+            class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+          <p class="text-xs text-gray-400 mt-1">Max 20 MB. PDF, Word, Excel, images, etc.</p>
+        </div>
+      </div>
+
+      <div class="flex gap-3 pt-1">
+        <button type="button" onclick="closeModal()"
+          class="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          Cancel
+        </button>
+        <button type="submit" id="submit-btn"
+          class="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
+          Create Project
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── JavaScript ─────────────────────────────────────────────────────── -->
+<script>
+const STAGES   = {{ stages | tojson }};
+const TERMINAL = {{ terminal | tojson }};
+
+// Column accent per stage — progression from neutral to committed.
+const STAGE_STYLE = {
+  'Initial View': 'border-gray-300  text-gray-600',
+  'Diligence':    'border-blue-300  text-blue-700',
+  'Conviction':   'border-amber-300 text-amber-700',
+  'Invested':     'border-green-400 text-green-700',
+  'Passed':       'border-gray-200  text-gray-400',
+};
+
+let projects  = [];
+let sources   = [];
+let subtypes  = [];
+let ideaTypes = [];
+let editingId = null;
+
+// ── Data ──────────────────────────────────────────────────────────────────
+
+async function loadAll() {
+  const [p, s, st, it] = await Promise.all([
+    fetch('/api/projects').then(r => r.json()),
+    fetch('/api/sources').then(r => r.json()),
+    fetch('/api/subtypes').then(r => r.json()),
+    fetch('/api/idea-types').then(r => r.json()),
+  ]);
+  projects  = p;
+  sources   = s;
+  subtypes  = st;
+  ideaTypes = it;
+  fillDropdowns();
+  render();
+}
+
+function fillOptions(selId, items, placeholder, selectedId) {
+  const sel = document.getElementById(selId);
+  sel.innerHTML = `<option value="">${placeholder}</option>` +
+    items.map(i => `<option value="${i.id}" ${i.id === selectedId ? 'selected' : ''}>${escHtml(i.name)}</option>`).join('');
+}
+
+function fillDropdowns(p = {}) {
+  fillOptions('f-idea-type', ideaTypes, '— None —',  p.idea_type_id || null);
+  fillOptions('f-subtype',   subtypes,  'None',      p.subtype_id   || null);
+  fillOptions('f-source',    sources,   'No source', p.source_id    || null);
+  fillOptions('f-hat-tip',   sources,   'None',      p.hat_tip_id   || null);
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+
+function render() {
+  const board = document.getElementById('board');
+  const empty = document.getElementById('empty-state');
+
+  if (projects.length === 0) {
+    board.innerHTML = '';
+    board.classList.add('hidden');
+    empty.classList.remove('hidden');
+    return;
+  }
+  board.classList.remove('hidden');
+  empty.classList.add('hidden');
+
+  board.innerHTML = STAGES.map(stage => {
+    const inStage = projects.filter(p => p.stage === stage);
+    const style   = STAGE_STYLE[stage] || 'border-gray-300 text-gray-600';
+    return `
+      <div class="flex-shrink-0 w-72">
+        <div class="flex items-center justify-between mb-3 pb-2 border-b-2 ${style}">
+          <span class="text-xs font-bold uppercase tracking-wide">${escHtml(stage)}</span>
+          <span class="text-xs font-semibold text-gray-400">${inStage.length}</span>
+        </div>
+        <div class="space-y-2">
+          ${inStage.map(card).join('') || '<p class="text-xs text-gray-300 px-1 py-3">Nothing here</p>'}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function card(p) {
+  const dirBadge = p.direction
+    ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${
+        p.direction === 'long' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+      }">${p.direction.toUpperCase()}</span>`
+    : '';
+  const tags = [p.idea_type_name, p.subtype_name].filter(Boolean)
+    .map(t => `<span class="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 text-[10px]">${escHtml(t)}</span>`)
+    .join('');
+
+  return `
+    <div class="bg-white rounded-lg border border-gray-200 p-3 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group"
+         onclick="window.location='/projects/${p.id}'">
+      <div class="flex items-start justify-between gap-2 mb-1.5">
+        <span class="font-semibold text-gray-900 text-sm leading-tight">${escHtml(p.name)}</span>
+        ${p.rating != null ? `<span class="text-[10px] font-mono text-gray-400 flex-shrink-0 mt-0.5">${p.rating.toFixed(1)}</span>` : ''}
+      </div>
+      <div class="flex items-center gap-1.5 flex-wrap mb-2">
+        ${p.ticker ? `<span class="font-mono text-xs font-bold text-gray-500">${escHtml(p.ticker)}</span>` : ''}
+        ${dirBadge}${tags}
+      </div>
+      ${p.thesis ? `<p class="text-xs text-gray-500 leading-snug line-clamp-2 mb-2">${escHtml(p.thesis.slice(0, 120))}${p.thesis.length > 120 ? '…' : ''}</p>` : ''}
+      <div onclick="event.stopPropagation()">
+        <select onchange="moveStage(${p.id}, this.value)"
+          class="w-full text-[11px] border border-gray-200 rounded px-1.5 py-1 text-gray-500 bg-gray-50 outline-none focus:ring-1 focus:ring-blue-400 cursor-pointer">
+          ${STAGES.map(s => `<option value="${s}" ${s === p.stage ? 'selected' : ''}>${escHtml(s)}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+}
+
+async function moveStage(id, stage) {
+  const res = await fetch(`/api/projects/${id}/stage`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ stage }),
+  });
+  if (!res.ok) { alert('Failed to move project'); return; }
+  const saved = await res.json();
+  projects = projects.map(p => p.id === id ? saved : p);
+  render();
+}
+
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────
+
+function onAttachTypeChange() {
+  const isFile = document.querySelector('input[name="attach-type"]:checked').value === 'file';
+  document.getElementById('attach-url-row').classList.toggle('hidden', isFile);
+  document.getElementById('attach-file-row').classList.toggle('hidden', !isFile);
+}
+
+function _resetModal() {
+  ['f-name','f-ticker','f-rating','f-thesis','f-attachment-url','f-attachment-file']
+    .forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-direction').value = '';
+  document.getElementById('f-stage').value     = STAGES[0];
+  document.getElementById('clear-attachment').checked = false;
+  document.querySelector('input[name="attach-type"][value="url"]').checked = true;
+  document.getElementById('attach-url-row').classList.remove('hidden');
+  document.getElementById('attach-file-row').classList.add('hidden');
+  document.getElementById('existing-attachment-strip').classList.add('hidden');
+  document.getElementById('err-name').classList.add('hidden');
+  fillDropdowns();
+}
+
+function openModal() {
+  editingId = null;
+  _resetModal();
+  document.getElementById('modal-title').textContent = 'New Project';
+  document.getElementById('submit-btn').textContent  = 'Create Project';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function openEditModal(id) {
+  const p = projects.find(x => x.id === id);
+  if (!p) return;
+  editingId = id;
+  _resetModal();
+
+  document.getElementById('f-name').value      = p.name;
+  document.getElementById('f-ticker').value    = p.ticker    ?? '';
+  document.getElementById('f-direction').value = p.direction ?? '';
+  document.getElementById('f-stage').value     = p.stage;
+  document.getElementById('f-rating').value    = p.rating    ?? '';
+  document.getElementById('f-thesis').value    = p.thesis    ?? '';
+  fillDropdowns(p);
+
+  if (p.attachment_url) {
+    document.querySelector('input[name="attach-type"][value="url"]').checked = true;
+    document.getElementById('f-attachment-url').value = p.attachment_url;
+  } else if (p.attachment_name) {
+    document.querySelector('input[name="attach-type"][value="file"]').checked = true;
+    document.getElementById('attach-url-row').classList.add('hidden');
+    document.getElementById('attach-file-row').classList.remove('hidden');
+  }
+  if (p.attachment_name || p.attachment_url) {
+    document.getElementById('existing-attachment-label').textContent =
+      p.attachment_name ? `📎 ${p.attachment_name}` : `🔗 ${p.attachment_url}`;
+    document.getElementById('existing-attachment-strip').classList.remove('hidden');
+  }
+
+  document.getElementById('modal-title').textContent = 'Edit Project';
+  document.getElementById('submit-btn').textContent  = 'Save Changes';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  editingId = null;
+  document.getElementById('modal').classList.add('hidden');
+}
+
+async function submitProject(e) {
+  e.preventDefault();
+
+  const name = document.getElementById('f-name').value.trim();
+  if (!name) {
+    const el = document.getElementById('err-name');
+    el.textContent = 'Required';
+    el.classList.remove('hidden');
+    return;
+  }
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  const fd = new FormData();
+  fd.append('name',  name);
+  fd.append('stage', document.getElementById('f-stage').value);
+  const simple = {
+    ticker:       'f-ticker',
+    direction:    'f-direction',
+    rating:       'f-rating',
+    thesis:       'f-thesis',
+    idea_type_id: 'f-idea-type',
+    subtype_id:   'f-subtype',
+    source_id:    'f-source',
+    hat_tip_id:   'f-hat-tip',
+  };
+  for (const [key, id] of Object.entries(simple)) {
+    const v = document.getElementById(id).value;
+    if (v) fd.append(key, v);
+  }
+
+  const clearAtt = editingId && document.getElementById('clear-attachment').checked;
+  if (clearAtt) {
+    fd.append('clear_attachment', 'true');
+  } else {
+    const attachType = document.querySelector('input[name="attach-type"]:checked').value;
+    if (attachType === 'url') {
+      const url = document.getElementById('f-attachment-url').value.trim();
+      if (editingId || url) fd.append('attachment_url', url);
+    } else {
+      const file = document.getElementById('f-attachment-file').files[0];
+      if (file) {
+        if (file.size > 20 * 1024 * 1024) {
+          alert(`File "${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 20 MB. Please choose a smaller file.`);
+          btn.disabled = false;
+          btn.textContent = editingId ? 'Save Changes' : 'Create Project';
+          return;
+        }
+        fd.append('file', file);
+      }
+    }
+  }
+
+  try {
+    const url    = editingId ? `/api/projects/${editingId}` : '/api/projects';
+    const method = editingId ? 'PUT' : 'POST';
+    const res    = await fetch(url, { method, body: fd });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || 'Failed to save project');
+      return;
+    }
+    await loadAll();
+    closeModal();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = editingId ? 'Save Changes' : 'Create Project';
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+(async () => {
+  await loadAll();
+  const editId = new URLSearchParams(window.location.search).get('edit');
+  if (editId) {
+    window.history.replaceState({}, '', '/projects');
+    openEditModal(parseInt(editId));
+  }
+})();
+</script>
+</body>
+</html>

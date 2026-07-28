@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ project.name }} — Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .spin { animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-3xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-4">
+      <a href="/projects" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← All Projects</a>
+      <div class="h-4 w-px bg-gray-200"></div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-2xl font-bold text-gray-900 tracking-tight">{{ project.name }}</span>
+          {% if project.direction %}
+          <span class="px-2 py-0.5 rounded-full text-xs font-semibold
+            {{ 'bg-green-100 text-green-700' if project.direction == 'long' else 'bg-red-100 text-red-700' }}">
+            {{ project.direction.upper() }}
+          </span>
+          {% endif %}
+        </div>
+        <p class="text-sm text-gray-400 mt-0.5">
+          {% if project.ticker %}<span class="font-mono font-semibold text-gray-500">{{ project.ticker }}</span>{% endif %}
+          {% if project.ticker and project.source_name %}<span class="mx-1">·</span>{% endif %}
+          {% if project.source_name %}{{ project.source_name }}{% endif %}
+        </p>
+      </div>
+    </div>
+    <div class="flex gap-2">
+      <a href="/projects?edit={{ project.id }}"
+        class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+        Edit
+      </a>
+      <button onclick="deleteProject()"
+        class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors">
+        Delete
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ─────────────────────────────────────────────────────────────────── -->
+<main class="max-w-3xl mx-auto px-6 py-8 space-y-5">
+
+  <!-- Stage pipeline -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-4">Stage</p>
+    <div class="flex items-center gap-1">
+      {% for s in stages %}
+        {% set is_current = s == project.stage %}
+        {% set is_terminal = s in terminal %}
+        <button onclick="setStage('{{ s }}')"
+          class="flex-1 px-2 py-2 rounded-lg text-xs font-semibold transition-colors
+            {% if is_current and s == 'Invested' %}bg-green-600 text-white
+            {% elif is_current and s == 'Passed' %}bg-gray-500 text-white
+            {% elif is_current %}bg-blue-600 text-white
+            {% else %}bg-gray-50 text-gray-400 hover:bg-gray-100 hover:text-gray-600{% endif %}">
+          {{ s }}
+        </button>
+        {% if not loop.last and not is_terminal %}
+          <span class="text-gray-300 text-xs">›</span>
+        {% elif not loop.last %}
+          <span class="text-gray-300 text-xs">/</span>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Meta -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5 grid grid-cols-4 gap-4">
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Type</p>
+      <p class="{{ 'text-gray-800 font-medium' if project.idea_type_name else 'text-gray-400' }}">
+        {{ project.idea_type_name or '—' }}
+      </p>
+    </div>
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Sub-type</p>
+      <p class="{{ 'text-gray-800 font-medium' if project.subtype_name else 'text-gray-400' }}">
+        {{ project.subtype_name or '—' }}
+      </p>
+    </div>
+    <div>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Rating</p>
+      {% if project.rating is not none %}
+        <p class="text-gray-800 font-medium">{{ '{:.1f}'.format(project.rating) }}<span class="text-xs font-normal text-gray-400"> / 5</span></p>
+      {% else %}
+        <p class="text-gray-400">—</p>
+      {% endif %}
+    </div>
+    <div>
+      <div class="flex items-start justify-between">
+        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Price</p>
+        {% if project.ticker %}
+        <button id="refresh-btn" onclick="refreshPrice()" title="Refresh price"
+          class="text-gray-400 hover:text-blue-600 text-sm transition-colors leading-none -mt-0.5">↻</button>
+        {% endif %}
+      </div>
+      <p class="text-gray-800 font-medium font-mono" id="price-display">
+        {% if project.current_price %}${{ '{:,.2f}'.format(project.current_price) }}{% else %}<span class="text-gray-400 font-sans">—</span>{% endif %}
+      </p>
+    </div>
+  </div>
+
+  <!-- Thesis -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Thesis / Notes</p>
+    {% if project.thesis %}
+      <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">{{ project.thesis }}</p>
+    {% else %}
+      <p class="text-gray-400 text-sm">Nothing written yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- Hat tip -->
+  {% if project.hat_tip_name %}
+  <div class="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-2 text-sm text-gray-500">
+    <span class="text-gray-400">🎩</span>
+    <span>Hat tip: <span class="font-medium text-gray-700">{{ project.hat_tip_name }}</span></span>
+  </div>
+  {% endif %}
+
+  <!-- Origin idea -->
+  {% if project.origin_idea_id %}
+  <div class="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-2 text-sm text-gray-500">
+    <span class="text-gray-400">↗</span>
+    <span>Promoted from
+      <a href="/ideas/{{ project.origin_idea_id }}" class="text-blue-600 hover:text-blue-800 font-medium">a collected idea</a>
+    </span>
+  </div>
+  {% endif %}
+
+  <!-- Attachment -->
+  {% if project.attachment_url or project.attachment_name %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Attachment</p>
+    {% if project.attachment_name %}
+      <a href="/api/projects/{{ project.id }}/attachment" target="_blank"
+        class="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 transition-colors text-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+        </svg>
+        {{ project.attachment_name }}
+      </a>
+    {% else %}
+      <a href="{{ project.attachment_url }}" target="_blank" rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 transition-colors text-sm break-all">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+        </svg>
+        {{ project.attachment_url }}
+      </a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</main>
+
+<script>
+const PROJECT_ID = {{ project.id }};
+
+async function deleteProject() {
+  if (!confirm('Delete this project permanently?')) return;
+  await fetch(`/api/projects/${PROJECT_ID}`, { method: 'DELETE' });
+  window.location.href = '/projects';
+}
+
+async function setStage(stage) {
+  const res = await fetch(`/api/projects/${PROJECT_ID}/stage`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ stage }),
+  });
+  if (!res.ok) { alert('Failed to change stage'); return; }
+  window.location.reload();
+}
+
+async function refreshPrice() {
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('spin');
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`/api/projects/${PROJECT_ID}/refresh-price`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Failed to refresh'); return; }
+    document.getElementById('price-display').innerHTML =
+      `$${data.price.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+  } finally {
+    btn.classList.remove('spin');
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

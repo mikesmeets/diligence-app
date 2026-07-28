@@ -35,6 +35,10 @@
       </div>
     </div>
     <div class="flex gap-2">
+      <button onclick="promoteIdea()" title="Start a project from this idea"
+        class="px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors">
+        Promote to Project
+      </button>
       <a href="/?edit={{ idea.id }}"
         class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
         Edit
@@ -200,6 +204,18 @@ const TICKER        = '{{ idea.ticker }}';
 const IDEA_PRICE    = {{ idea.idea_price or 'null' }};
 const INITIAL_PRICE = {{ idea.initial_price or 'null' }};
 const DIRECTION     = '{{ idea.direction }}';
+
+async function promoteIdea() {
+  if (!confirm(`Start a project from ${TICKER}? It'll begin at Initial View, and this collected idea stays put.`)) return;
+  const res = await fetch(`/api/ideas/${IDEA_ID}/promote`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json();
+    alert(err.error || 'Failed to promote idea');
+    return;
+  }
+  const project = await res.json();
+  window.location.href = `/projects/${project.id}`;
+}
 
 async function deleteIdea() {
   if (!confirm('Delete this idea permanently?')) return;
