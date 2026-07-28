@@ -162,20 +162,44 @@
   </div>
   {% endif %}
 
-  <!-- Thesis -->
+  <!-- Write-up: business description, thesis, pros/cons, key questions -->
+  {% macro panel(field, label, placeholder, note='') %}
   <div class="bg-white rounded-xl border border-gray-200 p-5">
-    <div class="flex items-baseline justify-between mb-3">
-      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Thesis / Notes</p>
-      {% if project.origin_idea_id %}
-        <span class="text-xs text-gray-300">forked from the collected idea — edits here don't affect it</span>
-      {% endif %}
+    <div class="flex items-baseline justify-between mb-3 gap-3">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">{{ label }}</p>
+      <div class="flex items-baseline gap-3">
+        {% if note %}<span class="text-xs text-gray-300 hidden sm:inline">{{ note }}</span>{% endif %}
+        <button id="btn-{{ field }}" onclick="editNote('{{ field }}')"
+          class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Edit</button>
+      </div>
     </div>
-    {% if project.thesis %}
-      <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">{{ project.thesis }}</p>
-    {% else %}
-      <p class="text-gray-400 text-sm">Nothing written yet.</p>
-    {% endif %}
+    <div id="view-{{ field }}" class="text-gray-800 leading-relaxed whitespace-pre-wrap"></div>
+    <div id="edit-{{ field }}" class="hidden">
+      <textarea id="ta-{{ field }}" rows="6" placeholder="{{ placeholder }}"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+      <div class="flex gap-2 mt-2">
+        <button onclick="saveNote('{{ field }}')"
+          class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+        <button onclick="cancelNote('{{ field }}')"
+          class="px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
+        <span id="status-{{ field }}" class="text-xs text-gray-400 self-center"></span>
+      </div>
+    </div>
   </div>
+  {% endmacro %}
+
+  {{ panel('business_description', 'Business Description', 'What does this company actually do? How does it make money?') }}
+
+  {{ panel('thesis', 'Thesis',
+           'What is the view, and why is it different from the market?',
+           "forked from the collected idea — edits here don't affect it" if project.origin_idea_id else '') }}
+
+  <div class="grid md:grid-cols-2 gap-5">
+    {{ panel('pros', 'Pros', 'What works. One per line.') }}
+    {{ panel('cons', 'Cons', 'What breaks it. One per line.') }}
+  </div>
+
+  {{ panel('key_questions', 'Key Questions', "What still needs answering before you'd size this?") }}
 
   <!-- Attachment -->
   {% if project.attachment_url or project.attachment_name %}
@@ -223,6 +247,112 @@ async function setStage(stage) {
   if (!res.ok) { alert('Failed to change stage'); return; }
   window.location.reload();
 }
+
+// ── Write-up panels ───────────────────────────────────────────────────────
+
+const NOTES = {{ {
+  'business_description': project.business_description,
+  'thesis':               project.thesis,
+  'pros':                 project.pros,
+  'cons':                 project.cons,
+  'key_questions':        project.key_questions,
+} | tojson }};
+
+const NOTE_EMPTY = {
+  business_description: 'No description yet.',
+  thesis:               'Nothing written yet.',
+  pros:                 'None listed yet.',
+  cons:                 'None listed yet.',
+  key_questions:        'None listed yet.',
+};
+
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderNote(f) {
+  const el = document.getElementById(`view-${f}`);
+  const v  = (NOTES[f] || '').trim();
+
+  if (!v) {
+    el.innerHTML = `<span class="text-gray-400 text-sm">${NOTE_EMPTY[f]}</span>`;
+    return;
+  }
+
+  // Pros and cons read as lists — strip any bullet the user typed so we don't
+  // double it up. Requires trailing space, so "3-year runway" stays intact.
+  if (f === 'pros' || f === 'cons') {
+    const lines = v.split('\n').map(s => s.replace(/^\s*[-•*]\s+/, '').trim()).filter(Boolean);
+    const color = f === 'pros' ? 'text-green-600' : 'text-red-500';
+    const mark  = f === 'pros' ? '+' : '–';
+    el.innerHTML = `<ul class="space-y-1.5">${lines.map(l =>
+      `<li class="flex gap-2 text-sm leading-relaxed">
+         <span class="${color} font-bold flex-shrink-0">${mark}</span>
+         <span>${escHtml(l)}</span>
+       </li>`).join('')}</ul>`;
+    return;
+  }
+
+  if (f === 'key_questions') {
+    const lines = v.split('\n')
+      .map(s => s.replace(/^\s*(?:[-•*]|\d+[.)])\s+/, '').trim()).filter(Boolean);
+    el.innerHTML = `<ol class="space-y-1.5 list-decimal list-inside marker:text-gray-400">${
+      lines.map(l => `<li class="text-sm leading-relaxed">${escHtml(l)}</li>`).join('')}</ol>`;
+    return;
+  }
+
+  el.textContent = v;   // prose — keep whitespace via the wrapper's CSS
+}
+
+function editNote(f) {
+  document.getElementById(`view-${f}`).classList.add('hidden');
+  document.getElementById(`btn-${f}`).classList.add('hidden');
+  document.getElementById(`edit-${f}`).classList.remove('hidden');
+  const ta = document.getElementById(`ta-${f}`);
+  ta.value = NOTES[f] || '';
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+
+function cancelNote(f) {
+  document.getElementById(`edit-${f}`).classList.add('hidden');
+  document.getElementById(`view-${f}`).classList.remove('hidden');
+  document.getElementById(`btn-${f}`).classList.remove('hidden');
+  document.getElementById(`status-${f}`).textContent = '';
+}
+
+async function saveNote(f) {
+  const ta     = document.getElementById(`ta-${f}`);
+  const status = document.getElementById(`status-${f}`);
+  status.textContent = 'Saving…';
+  try {
+    const res = await fetch(`/api/projects/${PROJECT_ID}/notes`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [f]: ta.value }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      status.textContent = err.error || 'Failed to save';
+      return;
+    }
+    const saved = await res.json();
+    NOTES[f] = saved[f];
+    renderNote(f);
+    cancelNote(f);
+  } catch (e) {
+    status.textContent = 'Failed to save';
+  }
+}
+
+Object.keys(NOTES).forEach(f => {
+  renderNote(f);
+  document.getElementById(`ta-${f}`).addEventListener('keydown', (e) => {
+    if (e.key === 'Escape')                     { e.preventDefault(); cancelNote(f); }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveNote(f); }
+  });
+});
 
 // ── Formatting ────────────────────────────────────────────────────────────
 

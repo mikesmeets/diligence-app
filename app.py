@@ -518,9 +518,13 @@ def refresh_single_price(idea_id):
 STAGES          = ['Initial View', 'Diligence', 'Conviction', 'Invested', 'Passed']
 TERMINAL_STAGES = ['Invested', 'Passed']
 
+# Long-form write-up panels, edited in place on the project page.
+NOTE_FIELDS = ('business_description', 'thesis', 'pros', 'cons', 'key_questions')
+
 _PROJECT_SELECT = (
     'SELECT p.id, p.name, p.ticker, p.direction, p.stage, p.thesis, p.rating, '
     'p.current_price, p.origin_idea_id, p.created_at, p.updated_at, '
+    'p.business_description, p.pros, p.cons, p.key_questions, '
     'p.attachment_url, p.attachment_name, '
     'p.idea_type_id, it.name AS idea_type_name, '
     'p.subtype_id,   st.name AS subtype_name, '
@@ -605,6 +609,10 @@ def create_project():
         _opt_int(data, 'hat_tip_id'),
         _opt_int(data, 'origin_idea_id'),
         fetch_current_price(ticker) if ticker else None,
+        data.get('business_description') or None,
+        data.get('pros') or None,
+        data.get('cons') or None,
+        data.get('key_questions') or None,
         now,
         now,
         attachment_url,
@@ -717,6 +725,34 @@ def set_project_stage(project_id):
     return jsonify(row)
 
 
+@app.route('/api/projects/<int:project_id>/notes', methods=['PATCH'])
+def update_project_notes(project_id):
+    """Edit one write-up panel in place.
+
+    Kept out of update_project on purpose: that route rebuilds the whole row
+    from the modal, which doesn't carry these fields, so routing them through
+    it would blank them on every ordinary save.
+    """
+    data    = request.get_json(force=True)
+    updates = {f: (data[f] or None) for f in NOTE_FIELDS if f in data}
+    if not updates:
+        return jsonify({'error': 'no recognised note fields'}), 400
+
+    assigns = ', '.join(f'{f} = {db.PH}' for f in updates)
+    params  = list(updates.values()) + [datetime.now().isoformat(), project_id]
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE projects SET {assigns}, updated_at = {db.PH} WHERE id = {db.PH}',
+            params,
+        )
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
 @app.route('/api/projects/<int:project_id>', methods=['DELETE'])
 def delete_project(project_id):
     with db.get_conn() as conn:
@@ -812,9 +848,13 @@ def promote_idea(idea_id):
         idea['hat_tip_id'],
         idea_id,
         idea['current_price'],
+        None,   # business_description
+        None,   # pros
+        None,   # cons
+        None,   # key_questions
         now,
         now,
-        None, None, None, None,
+        None, None, None, None,   # attachment url / name / data / key
     )
     with db.get_conn() as conn:
         row = db.insert_project(conn, values)

@@ -64,6 +64,10 @@ if IS_PG:
             hat_tip_id      INTEGER          REFERENCES sources(id)    ON DELETE SET NULL,
             origin_idea_id  INTEGER,
             current_price   DOUBLE PRECISION,
+            business_description TEXT,
+            pros            TEXT,
+            cons            TEXT,
+            key_questions   TEXT,
             created_at      TEXT             NOT NULL,
             updated_at      TEXT             NOT NULL,
             attachment_url  TEXT,
@@ -147,6 +151,10 @@ else:
             hat_tip_id      INTEGER REFERENCES sources(id)    ON DELETE SET NULL,
             origin_idea_id  INTEGER,
             current_price   REAL,
+            business_description TEXT,
+            pros            TEXT,
+            cons            TEXT,
+            key_questions   TEXT,
             created_at      TEXT    NOT NULL,
             updated_at      TEXT    NOT NULL,
             attachment_url  TEXT,
@@ -214,24 +222,35 @@ _MIGRATIONS = [
 ]
 
 
+_PROJECT_MIGRATIONS = [
+    ('business_description', 'TEXT'),
+    ('pros',                 'TEXT'),
+    ('cons',                 'TEXT'),
+    ('key_questions',        'TEXT'),
+]
+
+
 def migrate():
     """Add new columns to existing tables without breaking existing data."""
     with get_conn() as conn:
         cur = cursor(conn)
-        for col, typ in _MIGRATIONS:
-            if IS_PG:
-                cur.execute(f'ALTER TABLE ideas ADD COLUMN IF NOT EXISTS {col} {typ}')
-            else:
-                try:
-                    cur.execute(f'ALTER TABLE ideas ADD COLUMN {col} {typ}')
-                except Exception:
-                    pass  # column already exists
+        for table, cols in (('ideas', _MIGRATIONS), ('projects', _PROJECT_MIGRATIONS)):
+            for col, typ in cols:
+                if IS_PG:
+                    cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}')
+                else:
+                    try:
+                        cur.execute(f'ALTER TABLE {table} ADD COLUMN {col} {typ}')
+                    except Exception:
+                        pass  # column already exists
 
 
 PROJECT_COLS = (
     'name', 'ticker', 'direction', 'stage', 'thesis', 'rating',
     'idea_type_id', 'subtype_id', 'source_id', 'hat_tip_id',
-    'origin_idea_id', 'current_price', 'created_at', 'updated_at',
+    'origin_idea_id', 'current_price',
+    'business_description', 'pros', 'cons', 'key_questions',
+    'created_at', 'updated_at',
     'attachment_url', 'attachment_name', 'attachment_data', 'attachment_key',
 )
 
