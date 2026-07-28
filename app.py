@@ -1,4 +1,5 @@
 import os
+import time
 from flask import Flask, request, jsonify, render_template
 import yfinance as yf
 import pandas as pd
@@ -524,12 +525,14 @@ _PROJECT_SELECT = (
     'p.idea_type_id, it.name AS idea_type_name, '
     'p.subtype_id,   st.name AS subtype_name, '
     'p.source_id,    s.name  AS source_name, '
-    'p.hat_tip_id,   ht.name AS hat_tip_name '
+    'p.hat_tip_id,   ht.name AS hat_tip_name, '
+    'oi.ticker AS origin_idea_ticker '
     'FROM projects p '
-    'LEFT JOIN idea_types it ON p.idea_type_id = it.id '
-    'LEFT JOIN subtypes st   ON p.subtype_id   = st.id '
-    'LEFT JOIN sources s     ON p.source_id    = s.id '
-    'LEFT JOIN sources ht    ON p.hat_tip_id   = ht.id '
+    'LEFT JOIN idea_types it ON p.idea_type_id   = it.id '
+    'LEFT JOIN subtypes st   ON p.subtype_id     = st.id '
+    'LEFT JOIN sources s     ON p.source_id      = s.id '
+    'LEFT JOIN sources ht    ON p.hat_tip_id     = ht.id '
+    'LEFT JOIN ideas oi      ON p.origin_idea_id = oi.id '
 )
 
 
@@ -829,6 +832,244 @@ def project_detail(project_id):
     return render_template(
         'project.html', project=project, stages=STAGES, terminal=TERMINAL_STAGES
     )
+
+
+# ── Market data: price chart + tearsheet ─────────────────────────────────────
+# Yahoo calls are slow (1–3s), so results are cached in-process for a while.
+# Note on coverage: Yahoo supplies forward estimates for EPS and revenue only,
+# and only two periods out. Forward EBITDA/EBIT/FCF — and therefore forward
+# EV/EBITDA, FCF yield, and forward margins — do not exist in the feed, so the
+# margin and capex figures below are trailing.
+
+BENCHMARK       = '^GSPC'
+BENCHMARK_LABEL = 'S&P 500'
+CHART_PERIODS   = ('1mo', '3mo', 'ytd', '1y', '3y', '5y')
+
+_cache = {}
+
+
+def _cached(key, ttl, fn):
+    now = time.time()
+    hit = _cache.get(key)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    val = fn()
+    _cache[key] = (now, val)
+    return val
+
+
+def _num(v):
+    """Coerce to a JSON-safe float, treating NaN/None/non-numerics as null."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None   # NaN != NaN
+
+
+def _first(d, *keys):
+    for k in keys:
+        v = _num(d.get(k))
+        if v is not None:
+            return v
+    return None
+
+
+def _closes(ticker, period):
+    """Date -> close for a ticker over one of CHART_PERIODS."""
+    kwargs = {
+        'interval':    '1wk' if period in ('3y', '5y') else '1d',
+        'auto_adjust': True,
+    }
+    # yfinance has no native '3y' period, so anchor it with an explicit start.
+    if period == '3y':
+        kwargs['start'] = (datetime.now() - timedelta(days=365 * 3)).strftime('%Y-%m-%d')
+    else:
+        kwargs['period'] = period
+
+    df = yf.Ticker(ticker).history(**kwargs)
+    if df.empty or 'Close' not in df.columns:
+        return {}
+    out = {}
+    for dt, close in df['Close'].items():
+        v = _num(close)
+        if v is not None:
+            out[dt.strftime('%Y-%m-%d')] = v
+    return out
+
+
+def _build_history(ticker, period):
+    stock = _closes(ticker, period)
+    bench = _closes(BENCHMARK, period)
+    # Intersect so both lines share an x-axis; US equities and the S&P trade
+    # the same sessions, so this drops almost nothing.
+    dates = sorted(set(stock) & set(bench))
+    return {
+        'ticker':          ticker,
+        'period':          period,
+        'benchmark':       BENCHMARK,
+        'benchmark_label': BENCHMARK_LABEL,
+        'dates':           dates,
+        'stock':           [stock[d] for d in dates],
+        'bench':           [bench[d] for d in dates],
+    }
+
+
+@app.route('/api/market/<ticker>/history')
+def market_history(ticker):
+    period = (request.args.get('period') or '1y').lower()
+    if period not in CHART_PERIODS:
+        return jsonify({'error': f'invalid period: {period}'}), 400
+    ticker = ticker.strip().upper()
+    try:
+        data = _cached(f'hist:{ticker}:{period}', 900, lambda: _build_history(ticker, period))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+    if not data['dates']:
+        return jsonify({'error': f'No price history for {ticker}'}), 404
+    return jsonify(data)
+
+
+def _trailing_capex(t):
+    """Most recent annual capex as a positive number, from the cash-flow statement."""
+    try:
+        cf = t.cashflow
+        if cf is None or cf.empty:
+            return None
+        for label in ('Capital Expenditure', 'Capital Expenditures'):
+            if label in cf.index:
+                return abs(_num(cf.loc[label].iloc[0]) or 0) or None
+    except Exception:
+        pass
+    return None
+
+
+def _consensus(t, price, mcap):
+    """Forward EPS/revenue estimates — the only forward data Yahoo provides."""
+    rows = []
+    try:
+        eps_est = t.earnings_estimate
+        rev_est = t.revenue_estimate
+    except Exception:
+        return rows
+
+    for key, label in (('0y', 'Current FY'), ('+1y', 'Next FY')):
+        eps = eps_growth = rev = rev_growth = None
+        try:
+            if eps_est is not None and key in eps_est.index:
+                eps        = _num(eps_est.loc[key, 'avg'])
+                eps_growth = _num(eps_est.loc[key, 'growth'])
+        except Exception:
+            pass
+        try:
+            if rev_est is not None and key in rev_est.index:
+                rev        = _num(rev_est.loc[key, 'avg'])
+                rev_growth = _num(rev_est.loc[key, 'growth'])
+        except Exception:
+            pass
+        if eps is None and rev is None:
+            continue
+        rows.append({
+            'label':        label,
+            'eps':          eps,
+            'eps_growth':   eps_growth,
+            'revenue':      rev,
+            'rev_growth':   rev_growth,
+            'pe':           (price / eps) if price and eps else None,
+            'price_sales':  (mcap / rev)  if mcap  and rev else None,
+        })
+    return rows
+
+
+def _build_tearsheet(ticker):
+    t    = yf.Ticker(ticker)
+    info = t.info or {}
+
+    price   = _first(info, 'currentPrice', 'regularMarketPrice')
+    shares  = _num(info.get('sharesOutstanding'))
+    mcap    = _num(info.get('marketCap'))
+    debt    = _num(info.get('totalDebt'))
+    cash    = _num(info.get('totalCash'))
+    ev      = _num(info.get('enterpriseValue'))
+    ebitda  = _num(info.get('ebitda'))
+    revenue = _num(info.get('totalRevenue'))
+    avg_vol = _num(info.get('averageVolume'))
+
+    net_debt = (debt - cash) if debt is not None and cash is not None else None
+    # Whatever the EV bridge can't explain with market cap and net debt —
+    # minorities, prefs, and the like.
+    other = (ev - mcap - net_debt) if None not in (ev, mcap, net_debt) else None
+    capex = _trailing_capex(t)
+
+    def ratio(num, den):
+        return (num / den) if num is not None and den else None
+
+    return {
+        'ticker':  ticker,
+        'name':    info.get('shortName') or info.get('longName'),
+        'as_of':   datetime.now().isoformat(),
+        'capitalization': {
+            'price':      price,
+            'shares':     shares,
+            'market_cap': mcap,
+            'debt':       debt,
+            'cash':       cash,
+            'net_debt':   net_debt,
+            'other':      other,
+            'ev':         ev,
+        },
+        'technicals': {
+            'high_52w':       _num(info.get('fiftyTwoWeekHigh')),
+            'low_52w':        _num(info.get('fiftyTwoWeekLow')),
+            'adtv_3m_mm':     (avg_vol * price / 1e6) if avg_vol and price else None,
+            'short_pct_float': (lambda v: v * 100 if v is not None else None)(
+                                   _num(info.get('shortPercentOfFloat'))),
+            'days_to_cover':  _num(info.get('shortRatio')),
+            'dividend_yield': _num(info.get('dividendYield')),
+        },
+        'credit': {
+            'gross_leverage': ratio(debt,     ebitda),
+            'net_leverage':   ratio(net_debt, ebitda),
+            'debt_to_equity': _num(info.get('debtToEquity')),
+        },
+        'valuation': {
+            'pe':          _num(info.get('trailingPE')),
+            'forward_pe':  _num(info.get('forwardPE')),
+            'ev_ebitda':   _num(info.get('enterpriseToEbitda')),
+            'ev_revenue':  _num(info.get('enterpriseToRevenue')),
+            'price_sales': _first(info, 'priceToSalesTrailing12Months') or ratio(mcap, revenue),
+            'fcf_yield':   (lambda f: (f / mcap * 100) if f is not None and mcap else None)(
+                               _num(info.get('freeCashflow'))),
+        },
+        'margins': {
+            'gross':           (lambda v: v * 100 if v is not None else None)(_num(info.get('grossMargins'))),
+            'ebitda':          (lambda v: v * 100 if v is not None else None)(_num(info.get('ebitdaMargins'))),
+            'operating':       (lambda v: v * 100 if v is not None else None)(_num(info.get('operatingMargins'))),
+            'capex_pct_sales': (lambda v: v * 100 if v is not None else None)(ratio(capex, revenue)),
+            'capex_pct_ebitda':(lambda v: v * 100 if v is not None else None)(ratio(capex, ebitda)),
+        },
+        'growth': {
+            'revenue':  (lambda v: v * 100 if v is not None else None)(_num(info.get('revenueGrowth'))),
+            'earnings': (lambda v: v * 100 if v is not None else None)(_num(info.get('earningsGrowth'))),
+        },
+        'consensus': _consensus(t, price, mcap),
+        'analyst': {
+            'target':         _num(info.get('targetMeanPrice')),
+            'recommendation': info.get('recommendationKey'),
+        },
+    }
+
+
+@app.route('/api/market/<ticker>/tearsheet')
+def market_tearsheet(ticker):
+    ticker = ticker.strip().upper()
+    try:
+        data = _cached(f'tear:{ticker}', 900, lambda: _build_tearsheet(ticker))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+    if data['capitalization']['price'] is None:
+        return jsonify({'error': f'No market data for {ticker}'}), 404
+    return jsonify(data)
 
 
 @app.route('/api/stock-price')

@@ -8,13 +8,26 @@
   <style>
     .spin { animation: spin 1s linear infinite; display:inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .ts-row { display:flex; justify-content:space-between; align-items:baseline; gap:1rem;
+              padding:.3rem 0; border-bottom:1px solid #f3f4f6; font-size:.8125rem; }
+    .ts-row:last-child { border-bottom:0; }
+    .ts-label { color:#4b5563; }
+    .ts-val   { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#111827; font-weight:500; }
+    .ts-val.muted { color:#d1d5db; font-weight:400; }
+    .ts-head  { background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af;
+                font-weight:700; font-size:.75rem; padding:.3rem .5rem; margin-bottom:.4rem; }
+    .ts-sub   { font-weight:700; color:#374151; font-size:.75rem;
+                text-decoration:underline; margin:.75rem 0 .25rem; }
+    .ts-total { font-weight:700; }
+    .ts-total .ts-label { color:#111827; font-weight:700; }
+    .ts-total .ts-val   { border:1px solid #93c5fd; padding:0 .35rem; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header class="bg-white border-b border-gray-200 px-6 py-4">
-  <div class="max-w-3xl mx-auto flex items-center justify-between">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
     <div class="flex items-center gap-4">
       <a href="/projects" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">← All Projects</a>
       <div class="h-4 w-px bg-gray-200"></div>
@@ -30,8 +43,6 @@
         </div>
         <p class="text-sm text-gray-400 mt-0.5">
           {% if project.ticker %}<span class="font-mono font-semibold text-gray-500">{{ project.ticker }}</span>{% endif %}
-          {% if project.ticker and project.source_name %}<span class="mx-1">·</span>{% endif %}
-          {% if project.source_name %}{{ project.source_name }}{% endif %}
         </p>
       </div>
     </div>
@@ -49,7 +60,7 @@
 </header>
 
 <!-- ── Main ─────────────────────────────────────────────────────────────────── -->
-<main class="max-w-3xl mx-auto px-6 py-8 space-y-5">
+<main class="max-w-5xl mx-auto px-6 py-8 space-y-5">
 
   <!-- Stage pipeline -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
@@ -57,7 +68,6 @@
     <div class="flex items-center gap-1">
       {% for s in stages %}
         {% set is_current = s == project.stage %}
-        {% set is_terminal = s in terminal %}
         <button onclick="setStage('{{ s }}')"
           class="flex-1 px-2 py-2 rounded-lg text-xs font-semibold transition-colors
             {% if is_current and s == 'Invested' %}bg-green-600 text-white
@@ -66,17 +76,15 @@
             {% else %}bg-gray-50 text-gray-400 hover:bg-gray-100 hover:text-gray-600{% endif %}">
           {{ s }}
         </button>
-        {% if not loop.last and not is_terminal %}
-          <span class="text-gray-300 text-xs">›</span>
-        {% elif not loop.last %}
-          <span class="text-gray-300 text-xs">/</span>
+        {% if not loop.last %}
+          <span class="text-gray-300 text-xs">{{ '/' if s in terminal else '›' }}</span>
         {% endif %}
       {% endfor %}
     </div>
   </div>
 
   <!-- Meta -->
-  <div class="bg-white rounded-xl border border-gray-200 p-5 grid grid-cols-4 gap-4">
+  <div class="bg-white rounded-xl border border-gray-200 p-5 grid grid-cols-4 gap-y-5 gap-x-4">
     <div>
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Type</p>
       <p class="{{ 'text-gray-800 font-medium' if project.idea_type_name else 'text-gray-400' }}">
@@ -98,46 +106,76 @@
       {% endif %}
     </div>
     <div>
-      <div class="flex items-start justify-between">
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Price</p>
-        {% if project.ticker %}
-        <button id="refresh-btn" onclick="refreshPrice()" title="Refresh price"
-          class="text-gray-400 hover:text-blue-600 text-sm transition-colors leading-none -mt-0.5">↻</button>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Started</p>
+      <p class="text-gray-800 font-medium font-mono text-sm">{{ project.created_at[:10] }}</p>
+    </div>
+
+    <div class="col-span-2">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Source</p>
+      {% if project.origin_idea_id %}
+        <a href="/ideas/{{ project.origin_idea_id }}"
+          class="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 font-medium transition-colors">
+          {{ project.origin_idea_ticker or 'Collected idea' }}
+          <span class="text-xs text-gray-400 font-normal">collected idea ↗</span>
+        </a>
+        {% if project.source_name %}
+          <span class="text-sm text-gray-400 ml-1">via {{ project.source_name }}</span>
         {% endif %}
-      </div>
-      <p class="text-gray-800 font-medium font-mono" id="price-display">
-        {% if project.current_price %}${{ '{:,.2f}'.format(project.current_price) }}{% else %}<span class="text-gray-400 font-sans">—</span>{% endif %}
+      {% elif project.source_name %}
+        <p class="text-gray-800 font-medium">{{ project.source_name }}</p>
+      {% else %}
+        <p class="text-gray-400">—</p>
+      {% endif %}
+    </div>
+    <div class="col-span-2">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Hat Tip</p>
+      <p class="{{ 'text-gray-800 font-medium' if project.hat_tip_name else 'text-gray-400' }}">
+        {{ ('🎩 ' + project.hat_tip_name) if project.hat_tip_name else '—' }}
       </p>
     </div>
   </div>
 
+  {% if project.ticker %}
+  <!-- Price chart -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center justify-between mb-1 flex-wrap gap-3">
+      <div class="flex items-baseline gap-3">
+        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Price</p>
+        <span id="chart-legend" class="text-xs text-gray-400"></span>
+      </div>
+      <div id="period-picker" class="flex rounded-lg overflow-hidden border border-gray-300 text-xs"></div>
+    </div>
+    <div id="chart-wrap" class="relative mt-3">
+      <div id="chart-status" class="py-20 text-center text-sm text-gray-400">Loading price history…</div>
+      <div id="chart-tooltip"
+        class="hidden absolute pointer-events-none bg-gray-900 text-white text-xs rounded-md px-2.5 py-1.5 shadow-lg whitespace-nowrap z-10"></div>
+    </div>
+  </div>
+
+  <!-- Tearsheet -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center justify-between mb-4">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Tearsheet</p>
+      <span id="tearsheet-asof" class="text-xs text-gray-300"></span>
+    </div>
+    <div id="tearsheet" class="text-sm text-gray-400">Loading market data…</div>
+  </div>
+  {% endif %}
+
   <!-- Thesis -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
-    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Thesis / Notes</p>
+    <div class="flex items-baseline justify-between mb-3">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Thesis / Notes</p>
+      {% if project.origin_idea_id %}
+        <span class="text-xs text-gray-300">forked from the collected idea — edits here don't affect it</span>
+      {% endif %}
+    </div>
     {% if project.thesis %}
       <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">{{ project.thesis }}</p>
     {% else %}
       <p class="text-gray-400 text-sm">Nothing written yet.</p>
     {% endif %}
   </div>
-
-  <!-- Hat tip -->
-  {% if project.hat_tip_name %}
-  <div class="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-2 text-sm text-gray-500">
-    <span class="text-gray-400">🎩</span>
-    <span>Hat tip: <span class="font-medium text-gray-700">{{ project.hat_tip_name }}</span></span>
-  </div>
-  {% endif %}
-
-  <!-- Origin idea -->
-  {% if project.origin_idea_id %}
-  <div class="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-2 text-sm text-gray-500">
-    <span class="text-gray-400">↗</span>
-    <span>Promoted from
-      <a href="/ideas/{{ project.origin_idea_id }}" class="text-blue-600 hover:text-blue-800 font-medium">a collected idea</a>
-    </span>
-  </div>
-  {% endif %}
 
   <!-- Attachment -->
   {% if project.attachment_url or project.attachment_name %}
@@ -169,6 +207,7 @@
 
 <script>
 const PROJECT_ID = {{ project.id }};
+const TICKER     = {{ (project.ticker or '') | tojson }};
 
 async function deleteProject() {
   if (!confirm('Delete this project permanently?')) return;
@@ -185,20 +224,306 @@ async function setStage(stage) {
   window.location.reload();
 }
 
-async function refreshPrice() {
-  const btn = document.getElementById('refresh-btn');
-  btn.classList.add('spin');
-  btn.disabled = true;
+// ── Formatting ────────────────────────────────────────────────────────────
+
+const DASH = '<span class="ts-val muted">—</span>';
+
+function fmtBig(v) {                       // $5.0tn  /  $6.2bn  /  $481mm  /  -$2mm
+  if (v == null) return null;
+  const sign = v < 0 ? '-' : '';
+  const abs  = Math.abs(v);
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}tn`;
+  if (abs >= 1e9)  return `${sign}$${(abs / 1e9).toFixed(1)}bn`;
+  if (abs >= 1e6)  return `${sign}$${(abs / 1e6).toFixed(0)}mm`;
+  return `${sign}$${abs.toFixed(0)}`;
+}
+function fmtShares(v) {                    // 14.7bn  /  60.3mm
+  if (v == null) return null;
+  return Math.abs(v) >= 1e9 ? `${(v / 1e9).toFixed(1)}bn` : `${(v / 1e6).toFixed(1)}mm`;
+}
+function fmtPrice(v)  { return v == null ? null : `$${v.toFixed(2)}`; }
+function fmtX(v)      { return v == null ? null : `${v.toFixed(1)}x`; }
+function fmtPct(v)    { return v == null ? null : `${v.toFixed(1)}%`; }
+function fmtMM(v)     {                    // input is already in $mm
+  if (v == null) return null;
+  return Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(1)}bn` : `$${v.toFixed(1)}mm`;
+}
+function signedPct(v) { return v == null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`; }
+
+function row(label, value, opts = {}) {
+  const cls = opts.total ? 'ts-row ts-total' : 'ts-row';
+  return `<div class="${cls}">
+    <span class="ts-label">${label}</span>
+    ${value == null ? DASH : `<span class="ts-val">${value}</span>`}
+  </div>`;
+}
+
+// ── Price chart ───────────────────────────────────────────────────────────
+
+const PERIODS = [
+  ['1mo', '1M'], ['3mo', '3M'], ['ytd', 'YTD'],
+  ['1y',  '1Y'], ['3y',  '3Y'], ['5y',  '5Y'],
+];
+const STOCK_COLOR = '#2563eb';
+const BENCH_COLOR = '#9ca3af';
+const CW = 820, CH = 280, CPAD = { t: 16, r: 16, b: 26, l: 50 };
+
+let period    = '1y';
+let chartData = null;
+
+function renderPeriodPicker() {
+  document.getElementById('period-picker').innerHTML = PERIODS.map(([key, label], i) => `
+    <button onclick="setPeriod('${key}')"
+      class="px-2.5 py-1 font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''}
+        ${key === period ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}">
+      ${label}
+    </button>`).join('');
+}
+
+async function setPeriod(p) {
+  period = p;
+  renderPeriodPicker();
+  await loadChart();
+}
+
+async function loadChart() {
+  const status = document.getElementById('chart-status');
+  status.textContent = 'Loading price history…';
+  status.classList.remove('hidden');
+  const svg = document.getElementById('chart-svg');
+  if (svg) svg.remove();
+
   try {
-    const res  = await fetch(`/api/projects/${PROJECT_ID}/refresh-price`, { method: 'POST' });
+    const res  = await fetch(`/api/market/${encodeURIComponent(TICKER)}/history?period=${period}`);
     const data = await res.json();
-    if (!res.ok) { alert(data.error || 'Failed to refresh'); return; }
-    document.getElementById('price-display').innerHTML =
-      `$${data.price.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
-  } finally {
-    btn.classList.remove('spin');
-    btn.disabled = false;
+    if (!res.ok) { status.textContent = data.error || 'Could not load price history.'; return; }
+    chartData = data;
+    status.classList.add('hidden');
+    drawChart(data);
+  } catch (e) {
+    status.textContent = 'Could not load price history.';
   }
+}
+
+function niceStep(range) {
+  const raw  = range / 4;
+  const mag  = Math.pow(10, Math.floor(Math.log10(Math.abs(raw) || 1)));
+  const norm = raw / mag;
+  const step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return step * mag;
+}
+
+function drawChart(d) {
+  // Rebase both series to % change from the start so the comp is meaningful —
+  // an index level and a share price aren't comparable in absolute terms.
+  const base = (arr) => arr.map(v => (v / arr[0] - 1) * 100);
+  const s = base(d.stock), b = base(d.bench), n = d.dates.length;
+
+  const lo = Math.min(...s, ...b), hi = Math.max(...s, ...b);
+  const pad  = (hi - lo) * 0.12 || 1;
+  const yMin = lo - pad, yMax = hi + pad;
+
+  const iw = CW - CPAD.l - CPAD.r, ih = CH - CPAD.t - CPAD.b;
+  const X  = i => CPAD.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const Y  = v => CPAD.t + (1 - (v - yMin) / (yMax - yMin)) * ih;
+  const path = arr => arr.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+
+  // Horizontal gridlines on a round step, plus an emphasised zero line.
+  const step = niceStep(yMax - yMin);
+  const grid = [];
+  for (let v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
+    const y = Y(v);
+    grid.push(`<line x1="${CPAD.l}" y1="${y}" x2="${CW - CPAD.r}" y2="${y}"
+                 stroke="${Math.abs(v) < 1e-9 ? '#d1d5db' : '#f3f4f6'}" stroke-width="1"/>
+               <text x="${CPAD.l - 8}" y="${y + 3.5}" text-anchor="end"
+                 font-size="10" fill="#9ca3af">${v > 0 ? '+' : ''}${v.toFixed(0)}%</text>`);
+  }
+
+  // ~5 evenly spaced date labels.
+  const ticks = [];
+  const every = Math.max(1, Math.floor((n - 1) / 4));
+  for (let i = 0; i < n; i += every) {
+    const dt = new Date(d.dates[i] + 'T00:00:00');
+    const lbl = ['1mo', '3mo'].includes(period)
+      ? dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      : dt.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    ticks.push(`<text x="${X(i)}" y="${CH - 8}" text-anchor="middle"
+                  font-size="10" fill="#9ca3af">${lbl}</text>`);
+  }
+
+  document.getElementById('chart-wrap').insertAdjacentHTML('afterbegin', `
+    <svg id="chart-svg" viewBox="0 0 ${CW} ${CH}" width="100%" style="display:block">
+      ${grid.join('')}${ticks.join('')}
+      <path d="${path(b)}" fill="none" stroke="${BENCH_COLOR}" stroke-width="1.5"
+            stroke-dasharray="4 3" stroke-linejoin="round"/>
+      <path d="${path(s)}" fill="none" stroke="${STOCK_COLOR}" stroke-width="2"
+            stroke-linejoin="round"/>
+      <line id="cx" x1="0" y1="${CPAD.t}" x2="0" y2="${CH - CPAD.b}"
+            stroke="#9ca3af" stroke-width="1" opacity="0"/>
+      <circle id="cd-s" r="3.5" fill="${STOCK_COLOR}" opacity="0"/>
+      <circle id="cd-b" r="3.5" fill="${BENCH_COLOR}" opacity="0"/>
+      <rect id="hit" x="${CPAD.l}" y="${CPAD.t}" width="${iw}" height="${ih}" fill="transparent"/>
+    </svg>`);
+
+  document.getElementById('chart-legend').innerHTML =
+    `<span style="color:${STOCK_COLOR}">■</span> ${d.ticker} <strong>${signedPct(s[n-1])}</strong>
+     <span class="mx-1.5 text-gray-300">·</span>
+     <span style="color:${BENCH_COLOR}">■</span> ${d.benchmark_label} <strong>${signedPct(b[n-1])}</strong>`;
+
+  wireHover(d, s, b, X, Y, n);
+}
+
+function wireHover(d, s, b, X, Y, n) {
+  const svg  = document.getElementById('chart-svg');
+  const hit  = document.getElementById('hit');
+  const cx   = document.getElementById('cx');
+  const dotS = document.getElementById('cd-s');
+  const dotB = document.getElementById('cd-b');
+  const tip  = document.getElementById('chart-tooltip');
+  const wrap = document.getElementById('chart-wrap');
+
+  hit.addEventListener('mousemove', (e) => {
+    const rect  = svg.getBoundingClientRect();
+    const scale = CW / rect.width;
+    const vx    = (e.clientX - rect.left) * scale;
+
+    // Nearest sample to the cursor.
+    const iw = CW - CPAD.l - CPAD.r;
+    let i = Math.round(((vx - CPAD.l) / iw) * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+
+    const x = X(i);
+    cx.setAttribute('x1', x); cx.setAttribute('x2', x); cx.setAttribute('opacity', '1');
+    dotS.setAttribute('cx', x); dotS.setAttribute('cy', Y(s[i])); dotS.setAttribute('opacity', '1');
+    dotB.setAttribute('cx', x); dotB.setAttribute('cy', Y(b[i])); dotB.setAttribute('opacity', '1');
+
+    tip.innerHTML =
+      `<div class="font-semibold mb-0.5">${d.dates[i]}</div>
+       <div>${d.ticker} ${signedPct(s[i])} <span class="text-gray-400">(${fmtPrice(d.stock[i])})</span></div>
+       <div class="text-gray-300">${d.benchmark_label} ${signedPct(b[i])}</div>`;
+    tip.classList.remove('hidden');
+
+    // Keep the tooltip inside the card.
+    const px = x / scale;
+    tip.style.left = `${Math.min(Math.max(px + 12, 0), rect.width - tip.offsetWidth - 4)}px`;
+    tip.style.top  = '8px';
+  });
+
+  hit.addEventListener('mouseleave', () => {
+    [cx, dotS, dotB].forEach(el => el.setAttribute('opacity', '0'));
+    tip.classList.add('hidden');
+  });
+}
+
+// ── Tearsheet ─────────────────────────────────────────────────────────────
+
+async function loadTearsheet() {
+  const el = document.getElementById('tearsheet');
+  try {
+    const res = await fetch(`/api/market/${encodeURIComponent(TICKER)}/tearsheet`);
+    const d   = await res.json();
+    if (!res.ok) { el.textContent = d.error || 'Could not load market data.'; return; }
+    drawTearsheet(d);
+    document.getElementById('tearsheet-asof').textContent =
+      `as of ${new Date(d.as_of).toLocaleString()}`;
+  } catch (e) {
+    el.textContent = 'Could not load market data.';
+  }
+}
+
+function drawTearsheet(d) {
+  const c = d.capitalization, t = d.technicals, cr = d.credit;
+  const v = d.valuation, m = d.margins, g = d.growth, cons = d.consensus || [];
+
+  const left = `
+    <div class="ts-head">Current capitalization</div>
+    ${row('Price',      fmtPrice(c.price))}
+    ${row('Shares',     fmtShares(c.shares))}
+    ${row('Market Cap', fmtBig(c.market_cap), { total: true })}
+    ${row('Debt',       fmtBig(c.debt))}
+    ${row('Cash',       fmtBig(c.cash))}
+    ${row('Net Debt',   fmtBig(c.net_debt), { total: true })}
+    ${row('Other',      fmtBig(c.other))}
+    ${row('EV',         fmtBig(c.ev), { total: true })}
+
+    <div class="ts-head mt-5">Technicals</div>
+    ${row('52-week high',        fmtPrice(t.high_52w))}
+    ${row('52-week low',         fmtPrice(t.low_52w))}
+    ${row("3-Month ADTV ($mm's)", fmtMM(t.adtv_3m_mm))}
+    ${row('Short Interest % float', fmtPct(t.short_pct_float))}
+    ${row('Days to Cover',       t.days_to_cover == null ? null : t.days_to_cover.toFixed(1))}
+    ${row('Dividend Yield',      fmtPct(t.dividend_yield))}
+
+    <div class="ts-head mt-5">Credit</div>
+    ${row('Gross Leverage', fmtX(cr.gross_leverage))}
+    ${row('Net Leverage',   fmtX(cr.net_leverage))}
+    ${row('Debt / Equity',  cr.debt_to_equity == null ? null : `${cr.debt_to_equity.toFixed(0)}%`)}
+  `;
+
+  // Consensus: EPS and revenue only, two periods out — that's the whole of
+  // what Yahoo publishes forward. Everything else here is trailing.
+  const consCols = cons.map(x => `<th class="text-right font-semibold pb-1 px-1">${x.label}</th>`).join('');
+  const consRow  = (label, fn) => `
+    <tr>
+      <td class="py-0.5 text-gray-600">${label}</td>
+      ${cons.map(x => {
+        const val = fn(x);
+        return `<td class="text-right py-0.5 px-1 font-mono ${val == null ? 'text-gray-300' : 'text-gray-900'}">${val ?? '—'}</td>`;
+      }).join('')}
+    </tr>`;
+
+  const right = `
+    <div class="ts-head">Valuation <span class="font-normal">(trailing)</span></div>
+    ${row('P/E',         fmtX(v.pe))}
+    ${row('Forward P/E', fmtX(v.forward_pe))}
+    ${row('EV/EBITDA',   fmtX(v.ev_ebitda))}
+    ${row('EV/Revenue',  fmtX(v.ev_revenue))}
+    ${row('Price/Sales', fmtX(v.price_sales))}
+    ${row('FCF Yield',   fmtPct(v.fcf_yield))}
+
+    <div class="ts-head mt-5">Margins &amp; Growth <span class="font-normal">(trailing)</span></div>
+    ${row('Gross margin',     fmtPct(m.gross))}
+    ${row('EBITDA margin',    fmtPct(m.ebitda))}
+    ${row('EBIT margin',      fmtPct(m.operating))}
+    ${row('Capex % sales',    fmtPct(m.capex_pct_sales))}
+    ${row('Capex % EBITDA',   fmtPct(m.capex_pct_ebitda))}
+    ${row('Revenue growth',   signedPct(g.revenue))}
+    ${row('Earnings growth',  signedPct(g.earnings))}
+
+    <div class="ts-head mt-5">Consensus</div>
+    ${cons.length === 0
+      ? '<p class="text-xs text-gray-400 py-2">No estimates available.</p>'
+      : `<table class="w-full text-[13px]">
+           <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
+             <th class="text-left font-semibold pb-1">&nbsp;</th>${consCols}
+           </tr></thead>
+           <tbody>
+             ${consRow('EPS',           x => x.eps == null ? null : `$${x.eps.toFixed(2)}`)}
+             ${consRow('EPS growth',    x => signedPct(x.eps_growth == null ? null : x.eps_growth * 100))}
+             ${consRow('Revenue',       x => fmtBig(x.revenue))}
+             ${consRow('Revenue growth',x => signedPct(x.rev_growth == null ? null : x.rev_growth * 100))}
+             ${consRow('P/E',           x => fmtX(x.pe))}
+             ${consRow('Price/Sales',   x => fmtX(x.price_sales))}
+           </tbody>
+         </table>
+         <p class="text-[11px] text-gray-300 mt-2 leading-snug">
+           Yahoo publishes forward estimates for EPS and revenue only, two periods out.
+           Forward EBITDA, EBIT and FCF are not available, so EV/EBITDA, FCF yield and
+           margins above are trailing.
+         </p>`}
+  `;
+
+  document.getElementById('tearsheet').innerHTML =
+    `<div class="grid md:grid-cols-2 gap-x-10 gap-y-2 text-gray-900">
+       <div>${left}</div><div>${right}</div>
+     </div>`;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+if (TICKER) {
+  renderPeriodPicker();
+  loadChart();
+  loadTearsheet();
 }
 </script>
 </body>
