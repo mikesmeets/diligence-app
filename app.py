@@ -12,6 +12,38 @@ db.init()
 db.migrate()
 
 
+def _seed_idea_types():
+    """One-time: populate idea_types from existing idea_type text values."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            'SELECT DISTINCT idea_type FROM ideas '
+            f'WHERE idea_type IS NOT NULL AND idea_type_id IS NULL'
+        )
+        names = [r['idea_type'] if isinstance(r, dict) else r[0] for r in cur.fetchall()]
+        for name in names:
+            if db.IS_PG:
+                cur.execute(
+                    f'INSERT INTO idea_types (name) VALUES ({db.PH}) '
+                    f'ON CONFLICT (name) DO NOTHING',
+                    (name,),
+                )
+                cur.execute(f'SELECT id FROM idea_types WHERE name = {db.PH}', (name,))
+            else:
+                cur.execute(f'INSERT OR IGNORE INTO idea_types (name) VALUES ({db.PH})', (name,))
+                cur.execute(f'SELECT id FROM idea_types WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+            if row:
+                cur.execute(
+                    f'UPDATE ideas SET idea_type_id = {db.PH} '
+                    f'WHERE idea_type = {db.PH} AND idea_type_id IS NULL',
+                    (row['id'], name),
+                )
+
+
+_seed_idea_types()
+
+
 # ── Price helpers ────────────────────────────────────────────────────────────
 
 def _flatten(df):
@@ -131,6 +163,44 @@ def delete_subtype(subtype_id):
     return jsonify({'ok': True})
 
 
+@app.route('/api/idea-types', methods=['GET'])
+def get_idea_types():
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute('SELECT id, name FROM idea_types ORDER BY name')
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/idea-types', methods=['POST'])
+def create_idea_type():
+    data = request.get_json(force=True)
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO idea_types (name) VALUES ({db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id, name',
+                (name,),
+            )
+            row = db.to_dict(cur.fetchone())
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO idea_types (name) VALUES ({db.PH})', (name,))
+            cur.execute(f'SELECT id, name FROM idea_types WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/idea-types/<int:type_id>', methods=['DELETE'])
+def delete_idea_type(type_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'DELETE FROM idea_types WHERE id = {db.PH}', (type_id,))
+    return jsonify({'ok': True})
+
+
 @app.route('/api/ideas', methods=['GET'])
 def get_ideas():
     with db.get_conn() as conn:
@@ -140,11 +210,13 @@ def get_ideas():
             'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
             'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
+            'i.idea_type_id, it.name AS idea_type_name, '
             'i.subtype_id, st.name AS subtype_name '
             'FROM ideas i '
-            'LEFT JOIN sources s   ON i.source_id  = s.id '
-            'LEFT JOIN sources ht  ON i.hat_tip_id = ht.id '
-            'LEFT JOIN subtypes st ON i.subtype_id = st.id '
+            'LEFT JOIN sources s    ON i.source_id   = s.id '
+            'LEFT JOIN sources ht   ON i.hat_tip_id  = ht.id '
+            'LEFT JOIN idea_types it ON i.idea_type_id = it.id '
+            'LEFT JOIN subtypes st  ON i.subtype_id  = st.id '
             'ORDER BY i.created_at DESC'
         )
         return jsonify(db.to_dicts(cur.fetchall()))
@@ -181,9 +253,9 @@ def create_idea():
 
     source_id   = int(data['source_id'])   if data.get('source_id')   else None
     hat_tip_id  = int(data['hat_tip_id'])  if data.get('hat_tip_id')  else None
-    rating      = float(data['rating'])    if data.get('rating')      else None
-    idea_type   = data.get('idea_type') or None
-    subtype_id  = int(data['subtype_id'])  if data.get('subtype_id')  else None
+    rating        = float(data['rating'])      if data.get('rating')      else None
+    subtype_id    = int(data['subtype_id'])    if data.get('subtype_id')  else None
+    idea_type_id  = int(data['idea_type_id'])  if data.get('idea_type_id') else None
 
     values = (
         data['ticker'].upper(),
@@ -198,8 +270,9 @@ def create_idea():
         source_id,
         hat_tip_id,
         rating,
-        idea_type,
+        None,         # idea_type (legacy text, no longer written)
         subtype_id,
+        idea_type_id,
         datetime.now().isoformat(),
         attachment_url,
         attachment_name,
@@ -264,9 +337,9 @@ def update_idea(idea_id):
 
         source_id  = int(data['source_id'])  if data.get('source_id')  else None
         hat_tip_id = int(data['hat_tip_id']) if data.get('hat_tip_id') else None
-        rating     = float(data['rating'])   if data.get('rating')     else None
-        idea_type  = data.get('idea_type') or None
-        subtype_id = int(data['subtype_id']) if data.get('subtype_id') else None
+        rating       = float(data['rating'])     if data.get('rating')      else None
+        subtype_id   = int(data['subtype_id'])   if data.get('subtype_id')  else None
+        idea_type_id = int(data['idea_type_id']) if data.get('idea_type_id') else None
 
         # Always update core fields
         cur.execute(
@@ -283,8 +356,8 @@ def update_idea(idea_id):
                 source_id     = {db.PH},
                 hat_tip_id    = {db.PH},
                 rating        = {db.PH},
-                idea_type     = {db.PH},
-                subtype_id    = {db.PH}
+                subtype_id    = {db.PH},
+                idea_type_id  = {db.PH}
             WHERE id = {db.PH}''',
             (
                 data['ticker'].upper(),
@@ -299,8 +372,8 @@ def update_idea(idea_id):
                 source_id,
                 hat_tip_id,
                 rating,
-                idea_type,
                 subtype_id,
+                idea_type_id,
                 idea_id,
             ),
         )
@@ -356,11 +429,13 @@ def update_idea(idea_id):
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
             f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
+            f'i.idea_type_id, it.name AS idea_type_name, '
             f'i.subtype_id, st.name AS subtype_name '
             f'FROM ideas i '
-            f'LEFT JOIN sources s   ON i.source_id  = s.id '
-            f'LEFT JOIN sources ht  ON i.hat_tip_id = ht.id '
-            f'LEFT JOIN subtypes st ON i.subtype_id = st.id '
+            f'LEFT JOIN sources s    ON i.source_id   = s.id '
+            f'LEFT JOIN sources ht   ON i.hat_tip_id  = ht.id '
+            f'LEFT JOIN idea_types it ON i.idea_type_id = it.id '
+            f'LEFT JOIN subtypes st  ON i.subtype_id  = st.id '
             f'WHERE i.id = {db.PH}',
             (idea_id,),
         )
@@ -390,11 +465,13 @@ def idea_detail(idea_id):
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
             f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
             f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
+            f'i.idea_type_id, it.name AS idea_type_name, '
             f'i.subtype_id, st.name AS subtype_name '
             f'FROM ideas i '
-            f'LEFT JOIN sources s   ON i.source_id  = s.id '
-            f'LEFT JOIN sources ht  ON i.hat_tip_id = ht.id '
-            f'LEFT JOIN subtypes st ON i.subtype_id = st.id '
+            f'LEFT JOIN sources s    ON i.source_id   = s.id '
+            f'LEFT JOIN sources ht   ON i.hat_tip_id  = ht.id '
+            f'LEFT JOIN idea_types it ON i.idea_type_id = it.id '
+            f'LEFT JOIN subtypes st  ON i.subtype_id  = st.id '
             f'WHERE i.id = {db.PH}',
             (idea_id,),
         )

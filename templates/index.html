@@ -90,6 +90,25 @@
   </div>
 </div>
 
+<!-- ── Manage Idea Types Modal ────────────────────────────────────────── -->
+<div id="idea-types-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-900">Manage Idea Types</h2>
+      <button onclick="closeManageIdeaTypes()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="px-6 py-4 space-y-3">
+      <div class="flex gap-2">
+        <input id="new-idea-type-mgmt" type="text" placeholder="New idea type name…"
+          class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        <button onclick="addIdeaTypeFromMgmt()"
+          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Add</button>
+      </div>
+      <ul id="idea-types-list" class="divide-y divide-gray-100 max-h-60 overflow-y-auto rounded-lg border border-gray-200"></ul>
+    </div>
+  </div>
+</div>
+
 <!-- ── Manage Subtypes Modal ──────────────────────────────────────────── -->
 <div id="subtypes-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
   <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm">
@@ -212,21 +231,23 @@
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Idea Type <span class="font-normal text-gray-400">(optional)</span></label>
-          <select id="f-idea-type"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-            <option value="">— None —</option>
-            <option value="Value">Value</option>
-            <option value="Growth">Growth</option>
-            <option value="GARP">GARP</option>
-            <option value="Quality">Quality</option>
-            <option value="Momentum">Momentum</option>
-            <option value="Event-Driven">Event-Driven</option>
-            <option value="Special Situation">Special Situation</option>
-            <option value="Turnaround">Turnaround</option>
-            <option value="Distressed">Distressed</option>
-            <option value="Macro">Macro</option>
-            <option value="Arbitrage">Arbitrage</option>
-          </select>
+          <div class="flex gap-2">
+            <select id="f-idea-type" onchange="onIdeaTypeChange()"
+              class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+              <option value="">— None —</option>
+            </select>
+            <button type="button" onclick="openManageIdeaTypes()"
+              title="Manage idea types"
+              class="px-2.5 border border-gray-200 rounded-lg text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors text-sm">⚙</button>
+          </div>
+          <div id="new-idea-type-row" class="hidden mt-2 flex gap-2">
+            <input id="f-new-idea-type" type="text" placeholder="New idea type name…"
+              class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+            <button type="button" onclick="saveNewIdeaType()"
+              class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Add</button>
+            <button type="button" onclick="cancelNewIdeaType()"
+              class="px-3 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors">✕</button>
+          </div>
         </div>
       </div>
 
@@ -349,10 +370,11 @@ const ASSET_LABELS = {
   real_estate:    'Real Estate',
 };
 
-let ideas    = [];
-let sources  = [];
-let subtypes = [];
-let editingId = null;
+let ideas      = [];
+let sources    = [];
+let subtypes   = [];
+let ideaTypes  = [];
+let editingId  = null;
 
 // ── Filter & sort state ───────────────────────────────────────────────────
 let filterTicker    = '';
@@ -403,11 +425,11 @@ function getSortVal(idea, key) {
       const {idea_price: f, current_price: t} = idea;
       return (f && t) ? (t - f) / f * 100 : null;
     }
-    case 'source_name':   return idea.source_name   || null;
-    case 'hat_tip_name':  return idea.hat_tip_name  || null;
-    case 'subtype_name':  return idea.subtype_name  || null;
-    case 'rating':        return idea.rating        ?? null;
-    case 'idea_type':     return idea.idea_type     || null;
+    case 'source_name':    return idea.source_name              || null;
+    case 'hat_tip_name':  return idea.hat_tip_name             || null;
+    case 'subtype_name':  return idea.subtype_name             || null;
+    case 'rating':        return idea.rating                   ?? null;
+    case 'idea_type':     return idea.idea_type_name || idea.idea_type || null;
     default: return null;
   }
 }
@@ -461,6 +483,105 @@ async function loadSources() {
   populateSourceDropdown();
   populateHatTipDropdown();
   renderSourcesList();
+}
+
+// ── Idea Types ────────────────────────────────────────────────────────────
+
+async function loadIdeaTypes() {
+  const res = await fetch('/api/idea-types');
+  ideaTypes = await res.json();
+  populateIdeaTypeDropdown();
+  renderIdeaTypesList();
+}
+
+function populateIdeaTypeDropdown(selectedId) {
+  const sel = document.getElementById('f-idea-type');
+  const cur = selectedId ?? (sel ? parseInt(sel.value) || null : null);
+  sel.innerHTML = '<option value="">— None —</option>' +
+    ideaTypes.map(t => `<option value="${t.id}" ${t.id === cur ? 'selected' : ''}>${escHtml(t.name)}</option>`).join('') +
+    '<option value="__new__">＋ Add new type…</option>';
+}
+
+function onIdeaTypeChange() {
+  const val = document.getElementById('f-idea-type').value;
+  document.getElementById('new-idea-type-row').classList.toggle('hidden', val !== '__new__');
+  if (val === '__new__') document.getElementById('f-new-idea-type').focus();
+}
+
+async function saveNewIdeaType() {
+  const name = document.getElementById('f-new-idea-type').value.trim();
+  if (!name) return;
+  const res = await fetch('/api/idea-types', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name }),
+  });
+  const t = await res.json();
+  if (!ideaTypes.find(x => x.id === t.id)) ideaTypes.push(t);
+  ideaTypes.sort((a, b) => a.name.localeCompare(b.name));
+  populateIdeaTypeDropdown(t.id);
+  document.getElementById('new-idea-type-row').classList.add('hidden');
+  document.getElementById('f-new-idea-type').value = '';
+  renderIdeaTypesList();
+}
+
+function cancelNewIdeaType() {
+  document.getElementById('new-idea-type-row').classList.add('hidden');
+  document.getElementById('f-new-idea-type').value = '';
+  populateIdeaTypeDropdown();
+}
+
+function openManageIdeaTypes() {
+  renderIdeaTypesList();
+  document.getElementById('idea-types-modal').classList.remove('hidden');
+}
+
+function closeManageIdeaTypes() {
+  document.getElementById('idea-types-modal').classList.add('hidden');
+}
+
+function renderIdeaTypesList() {
+  const ul = document.getElementById('idea-types-list');
+  if (!ul) return;
+  if (ideaTypes.length === 0) {
+    ul.innerHTML = '<li class="px-3 py-3 text-sm text-gray-400">No idea types yet.</li>';
+    return;
+  }
+  ul.innerHTML = ideaTypes.map(t => `
+    <li class="flex items-center justify-between px-3 py-2 text-sm">
+      <span class="text-gray-800">${escHtml(t.name)}</span>
+      <button onclick="deleteIdeaType(${t.id})"
+        class="text-gray-300 hover:text-red-500 transition-colors text-xs ml-3">Delete</button>
+    </li>`).join('');
+}
+
+async function addIdeaTypeFromMgmt() {
+  const input = document.getElementById('new-idea-type-mgmt');
+  const name  = input.value.trim();
+  if (!name) return;
+  const res = await fetch('/api/idea-types', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name }),
+  });
+  const t = await res.json();
+  if (!ideaTypes.find(x => x.id === t.id)) ideaTypes.push(t);
+  ideaTypes.sort((a, b) => a.name.localeCompare(b.name));
+  input.value = '';
+  populateIdeaTypeDropdown();
+  renderIdeaTypesList();
+}
+
+async function deleteIdeaType(id) {
+  if (!confirm('Delete this idea type? Ideas using it will lose their type.')) return;
+  await fetch(`/api/idea-types/${id}`, { method: 'DELETE' });
+  ideaTypes = ideaTypes.filter(t => t.id !== id);
+  ideas = ideas.map(i => ({
+    ...i,
+    idea_type_id:   i.idea_type_id   === id ? null : i.idea_type_id,
+    idea_type_name: i.idea_type_id   === id ? null : i.idea_type_name,
+  }));
+  populateIdeaTypeDropdown();
+  renderIdeaTypesList();
+  render();
 }
 
 // ── Subtypes ──────────────────────────────────────────────────────────────
@@ -790,7 +911,7 @@ function render() {
       <td class="px-4 py-3 text-right">${fmtChange(idea.idea_price, idea.initial_price, idea.direction)}</td>
       <td class="px-4 py-3 text-right">${fmtChange(idea.initial_price, idea.current_price, idea.direction)}</td>
       <td class="px-4 py-3 text-right font-semibold">${fmtChange(idea.idea_price, idea.current_price, idea.direction)}</td>
-      <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">${idea.idea_type ? escHtml(idea.idea_type) : '<span class="text-gray-400">—</span>'}</td>
+      <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">${idea.idea_type_name || idea.idea_type ? escHtml(idea.idea_type_name || idea.idea_type) : '<span class="text-gray-400">—</span>'}</td>
       <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">${idea.subtype_name ? escHtml(idea.subtype_name) : '<span class="text-gray-400">—</span>'}</td>
       <td class="px-4 py-3 text-right font-mono text-gray-700 text-xs">${idea.rating != null ? idea.rating.toFixed(1) : '<span class="text-gray-400">—</span>'}</td>
       <td class="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
@@ -901,8 +1022,10 @@ function _resetModal() {
   document.querySelector('input[name="direction"][value="long"]').checked = true;
   document.querySelector('input[name="attach-type"][value="url"]').checked  = true;
   document.getElementById('f-asset-class').value    = 'public_equity';
-  document.getElementById('f-rating').value    = '';
-  document.getElementById('f-idea-type').value = '';
+  document.getElementById('f-rating').value = '';
+  populateIdeaTypeDropdown(null);
+  document.getElementById('new-idea-type-row').classList.add('hidden');
+  document.getElementById('f-new-idea-type').value = '';
   populateSubtypeDropdown(null);
   document.getElementById('new-subtype-row').classList.add('hidden');
   document.getElementById('f-new-subtype').value = '';
@@ -941,8 +1064,8 @@ function openEditModal(id) {
   document.getElementById('f-thesis').value         = idea.thesis;
   document.getElementById('f-asset-class').value    = idea.asset_class;
   document.querySelector(`input[name="direction"][value="${idea.direction}"]`).checked = true;
-  document.getElementById('f-rating').value    = idea.rating    ?? '';
-  document.getElementById('f-idea-type').value = idea.idea_type ?? '';
+  document.getElementById('f-rating').value = idea.rating ?? '';
+  populateIdeaTypeDropdown(idea.idea_type_id || null);
   populateSubtypeDropdown(idea.subtype_id || null);
   populateSourceDropdown(idea.source_id  || null);
   populateHatTipDropdown(idea.hat_tip_id || null);
@@ -1094,8 +1217,8 @@ async function submitIdea(e) {
   if (hatTipVal) fd.append('hat_tip_id', hatTipVal);
   const rating   = document.getElementById('f-rating').value;
   if (rating)    fd.append('rating', rating);
-  const ideaType  = document.getElementById('f-idea-type').value;
-  if (ideaType)  fd.append('idea_type', ideaType);
+  const ideaTypeVal = document.getElementById('f-idea-type').value;
+  if (ideaTypeVal && ideaTypeVal !== '__new__') fd.append('idea_type_id', ideaTypeVal);
   const subtypeVal = document.getElementById('f-subtype').value;
   if (subtypeVal && subtypeVal !== '__new__') fd.append('subtype_id', subtypeVal);
 
@@ -1149,7 +1272,7 @@ async function submitIdea(e) {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 (async () => {
-  await Promise.all([loadSources(), loadSubtypes(), loadIdeas()]);
+  await Promise.all([loadSources(), loadSubtypes(), loadIdeaTypes(), loadIdeas()]);
   const editId = new URLSearchParams(window.location.search).get('edit');
   if (editId) {
     window.history.replaceState({}, '', '/');
