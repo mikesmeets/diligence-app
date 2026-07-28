@@ -77,6 +77,18 @@ if IS_PG:
         )
     """
 
+    _CREATE_QUESTIONS = """
+        CREATE TABLE IF NOT EXISTS project_questions (
+            id         SERIAL PRIMARY KEY,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            question   TEXT    NOT NULL,
+            detail     TEXT,
+            position   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              SERIAL PRIMARY KEY,
@@ -164,6 +176,18 @@ else:
         )
     """
 
+    _CREATE_QUESTIONS = """
+        CREATE TABLE IF NOT EXISTS project_questions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            question   TEXT    NOT NULL,
+            detail     TEXT,
+            position   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        )
+    """
+
     _CREATE = """
         CREATE TABLE IF NOT EXISTS ideas (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,6 +230,7 @@ def init():
         cur.execute(_CREATE_IDEA_TYPES)
         cur.execute(_CREATE)
         cur.execute(_CREATE_PROJECTS)
+        cur.execute(_CREATE_QUESTIONS)
 
 
 _MIGRATIONS = [

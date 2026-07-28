@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from flask import Flask, request, jsonify, render_template
 import yfinance as yf
@@ -753,6 +754,136 @@ def update_project_notes(project_id):
     return jsonify(row)
 
 
+# ── Key questions ────────────────────────────────────────────────────────────
+# Each question is its own row so it can carry a body of findings that expands
+# under it. Older projects stored these as newline-separated text; that gets
+# lifted into rows once, on first read, and the text field cleared.
+
+_Q_BULLET = re.compile(r'^\s*(?:[-•*]|\d+[.)])\s+')
+
+
+def _questions_for(cur, project_id):
+    cur.execute(
+        f'SELECT id, question, detail, position FROM project_questions '
+        f'WHERE project_id = {db.PH} ORDER BY position, id',
+        (project_id,),
+    )
+    return db.to_dicts(cur.fetchall())
+
+
+def _lift_legacy_questions(cur, project_id):
+    """Move a project's newline-separated key_questions text into rows."""
+    cur.execute(f'SELECT key_questions FROM projects WHERE id = {db.PH}', (project_id,))
+    row  = db.to_dict(cur.fetchone()) or {}
+    text = (row.get('key_questions') or '').strip()
+    if not text:
+        return
+    now = datetime.now().isoformat()
+    for i, line in enumerate(text.split('\n')):
+        q = _Q_BULLET.sub('', line).strip()
+        if q:
+            cur.execute(
+                f'INSERT INTO project_questions '
+                f'(project_id, question, detail, position, created_at, updated_at) '
+                f'VALUES ({db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH})',
+                (project_id, q, None, i, now, now),
+            )
+    # Clear the source so this can't run twice.
+    cur.execute(
+        f'UPDATE projects SET key_questions = NULL WHERE id = {db.PH}', (project_id,)
+    )
+
+
+@app.route('/api/projects/<int:project_id>/questions', methods=['GET'])
+def get_questions(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        rows = _questions_for(cur, project_id)
+        if not rows:
+            _lift_legacy_questions(cur, project_id)
+            rows = _questions_for(cur, project_id)
+        return jsonify(rows)
+
+
+@app.route('/api/projects/<int:project_id>/questions', methods=['POST'])
+def create_question(project_id):
+    data = request.get_json(force=True)
+    question = (data.get('question') or '').strip()
+    if not question:
+        return jsonify({'error': 'question is required'}), 400
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT COALESCE(MAX(position), -1) AS p FROM project_questions '
+            f'WHERE project_id = {db.PH}',
+            (project_id,),
+        )
+        pos = (db.to_dict(cur.fetchone()) or {}).get('p', -1) + 1
+        cols = '(project_id, question, detail, position, created_at, updated_at)'
+        vals = (project_id, question, data.get('detail') or None, pos, now, now)
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO project_questions {cols} VALUES '
+                f'({db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH}) '
+                f'RETURNING id, question, detail, position',
+                vals,
+            )
+            row = db.to_dict(cur.fetchone())
+        else:
+            cur.execute(
+                f'INSERT INTO project_questions {cols} VALUES '
+                f'({db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH})',
+                vals,
+            )
+            cur.execute(
+                'SELECT id, question, detail, position FROM project_questions WHERE id = ?',
+                (cur.lastrowid,),
+            )
+            row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/questions/<int:question_id>', methods=['PATCH'])
+def update_question(question_id):
+    data    = request.get_json(force=True)
+    updates = {}
+    if 'question' in data:
+        q = (data.get('question') or '').strip()
+        if not q:
+            return jsonify({'error': 'question cannot be empty'}), 400
+        updates['question'] = q
+    if 'detail' in data:
+        updates['detail'] = data.get('detail') or None
+    if not updates:
+        return jsonify({'error': 'nothing to update'}), 400
+
+    assigns = ', '.join(f'{k} = {db.PH}' for k in updates)
+    params  = list(updates.values()) + [datetime.now().isoformat(), question_id]
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE project_questions SET {assigns}, updated_at = {db.PH} WHERE id = {db.PH}',
+            params,
+        )
+        cur.execute(
+            f'SELECT id, question, detail, position FROM project_questions WHERE id = {db.PH}',
+            (question_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
+@app.route('/api/questions/<int:question_id>', methods=['DELETE'])
+def delete_question(question_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'DELETE FROM project_questions WHERE id = {db.PH}', (question_id,))
+    return jsonify({'ok': True})
+
+
 @app.route('/api/projects/<int:project_id>', methods=['DELETE'])
 def delete_project(project_id):
     with db.get_conn() as conn:
@@ -761,6 +892,9 @@ def delete_project(project_id):
         row = db.to_dict(cur.fetchone()) or {}
         if row.get('attachment_key'):
             storage.delete(row['attachment_key'])
+        # SQLite doesn't enforce foreign keys by default, so the ON DELETE
+        # CASCADE can't be relied on — clear the children explicitly.
+        cur.execute(f'DELETE FROM project_questions WHERE project_id = {db.PH}', (project_id,))
         cur.execute(f'DELETE FROM projects WHERE id = {db.PH}', (project_id,))
     return jsonify({'ok': True})
 
