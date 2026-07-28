@@ -213,6 +213,39 @@ else:
     """
 
 
+_CREATE_SETTINGS = """
+    CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+"""
+
+
+def get_setting(key, default=None):
+    with get_conn() as conn:
+        cur = cursor(conn)
+        cur.execute(f'SELECT value FROM settings WHERE key = {PH}', (key,))
+        row = to_dict(cur.fetchone())
+    return row['value'] if row and row['value'] is not None else default
+
+
+def set_setting(key, value):
+    with get_conn() as conn:
+        cur = cursor(conn)
+        if IS_PG:
+            cur.execute(
+                f'INSERT INTO settings (key, value) VALUES ({PH}, {PH}) '
+                f'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+                (key, value),
+            )
+        else:
+            cur.execute(
+                f'INSERT INTO settings (key, value) VALUES ({PH}, {PH}) '
+                f'ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+                (key, value),
+            )
+
+
 def _pg_binary(data):
     from psycopg2 import Binary
     return Binary(data)
@@ -235,6 +268,7 @@ def init():
         cur.execute(_CREATE)
         cur.execute(_CREATE_PROJECTS)
         cur.execute(_CREATE_QUESTIONS)
+        cur.execute(_CREATE_SETTINGS)
 
 
 _MIGRATIONS = [
@@ -258,6 +292,13 @@ _PROJECT_MIGRATIONS = [
     ('key_questions',        'TEXT'),
     ('bull_case',            'TEXT'),
     ('bear_case',            'TEXT'),
+    # Long-form companion to each summary, shown on its own page.
+    ('business_description_detail', 'TEXT'),
+    ('bull_case_detail',            'TEXT'),
+    ('bear_case_detail',            'TEXT'),
+    ('business_description_generated_at', 'TEXT'),
+    ('bull_case_generated_at',            'TEXT'),
+    ('bear_case_generated_at',            'TEXT'),
 ]
 
 

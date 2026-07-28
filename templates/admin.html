@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin — Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-4xl mx-auto flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Diligence App</h1>
+      <nav class="flex gap-4 mt-1.5">
+        <a href="/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Collected Ideas</a>
+        <a href="/projects" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Projects</a>
+        <a href="/admin" class="text-sm font-semibold text-gray-900 border-b-2 border-blue-600 pb-0.5">Admin</a>
+      </nav>
+    </div>
+    <span id="save-status" class="text-xs text-gray-400"></span>
+  </div>
+</header>
+
+<main class="max-w-4xl mx-auto px-6 py-8 space-y-5">
+
+  <!-- API key -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Anthropic API Key</p>
+
+    <div id="key-status" class="text-sm mb-3"></div>
+
+    <div id="key-input-row">
+      <input id="f-key" type="password" autocomplete="off" placeholder="sk-ant-…"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-blue-500" />
+      <div class="flex gap-2 mt-2">
+        <button onclick="saveKey()"
+          class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save key</button>
+        <button onclick="clearKey()" id="clear-key-btn"
+          class="hidden px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors">Remove stored key</button>
+      </div>
+    </div>
+
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      The key is write-only — it's never sent back to this page once saved. Prefer setting
+      the <code class="font-mono text-gray-500">ANTHROPIC_API_KEY</code> environment variable
+      on Railway instead: an environment key takes precedence and never touches the database.
+      Anyone who can reach this app can spend against whichever key is active.
+    </p>
+  </div>
+
+  <!-- Model -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model</p>
+    <select id="f-model" onchange="saveAll()"
+      class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"></select>
+    <p class="text-xs text-gray-400 mt-2">
+      Opus 5 is the most capable and the right default for research write-ups. Sonnet 5 is
+      faster and cheaper if you're generating a lot of these.
+    </p>
+  </div>
+
+  <!-- System prompt (read-only) -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-baseline justify-between mb-3">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">System Prompt</p>
+      <span class="text-xs text-gray-300">fixed — defines the summary / detail split</span>
+    </div>
+    <pre id="system-prompt" class="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed"></pre>
+  </div>
+
+  <!-- Prompts -->
+  {% for field, label in fields.items() %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-baseline justify-between mb-3 gap-3">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">{{ label }} Prompt</p>
+      <div class="flex items-baseline gap-3">
+        <span id="dirty-{{ field }}" class="text-xs text-amber-600 hidden">unsaved</span>
+        <button onclick="resetPrompt('{{ field }}')"
+          class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Reset to default</button>
+      </div>
+    </div>
+    <textarea id="p-{{ field }}" rows="14" oninput="markDirty('{{ field }}')"
+      class="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+  </div>
+  {% endfor %}
+
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs text-gray-500 leading-relaxed mb-3">
+      Prompts can use <code class="font-mono">{ticker}</code>, <code class="font-mono">{name}</code>,
+      <code class="font-mono">{direction}</code>, and <code class="font-mono">{context}</code>.
+      <code class="font-mono">{context}</code> is replaced with the project's details and its
+      full tearsheet — leave it in unless you specifically don't want the model to see the numbers.
+    </p>
+    <button onclick="saveAll()"
+      class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">
+      Save prompts
+    </button>
+  </div>
+
+</main>
+
+<script>
+const FIELDS = {{ fields.keys() | list | tojson }};
+let defaults = {};
+
+function status(msg, tone = 'gray') {
+  const el = document.getElementById('save-status');
+  el.textContent = msg;
+  el.className = `text-xs text-${tone}-500`;
+  if (msg) setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 4000);
+}
+
+function markDirty(field) {
+  document.getElementById(`dirty-${field}`).classList.remove('hidden');
+}
+
+function clearDirty() {
+  FIELDS.forEach(f => document.getElementById(`dirty-${f}`).classList.add('hidden'));
+}
+
+function renderKeyStatus(source) {
+  const el  = document.getElementById('key-status');
+  const btn = document.getElementById('clear-key-btn');
+  const row = document.getElementById('key-input-row');
+
+  if (source === 'env') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ Using the ANTHROPIC_API_KEY environment variable.</span>
+      <span class="text-gray-400">This takes precedence — a key saved here would be ignored.</span>`;
+    row.classList.add('opacity-50');
+    btn.classList.add('hidden');
+  } else if (source === 'settings') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ A key is stored in the database.</span>
+      <span class="text-gray-400">Enter a new one below to replace it.</span>`;
+    row.classList.remove('opacity-50');
+    btn.classList.remove('hidden');
+  } else {
+    el.innerHTML = `<span class="text-amber-600 font-medium">No key set.</span>
+      <span class="text-gray-400">Generation is disabled until you add one.</span>`;
+    row.classList.remove('opacity-50');
+    btn.classList.add('hidden');
+  }
+}
+
+async function load() {
+  const s = await (await fetch('/api/settings')).json();
+  defaults = s.default_prompts;
+
+  renderKeyStatus(s.key_source);
+  document.getElementById('system-prompt').textContent = s.system_prompt;
+
+  const sel = document.getElementById('f-model');
+  sel.innerHTML = s.models.map(m =>
+    `<option value="${m.id}" ${m.id === s.model ? 'selected' : ''}>${m.label}</option>`).join('');
+
+  FIELDS.forEach(f => { document.getElementById(`p-${f}`).value = s.prompts[f] || ''; });
+  clearDirty();
+}
+
+function resetPrompt(field) {
+  document.getElementById(`p-${field}`).value = defaults[field];
+  markDirty(field);
+}
+
+async function post(body) {
+  const res = await fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { status('Save failed', 'red'); return null; }
+  return res.json();
+}
+
+async function saveAll() {
+  const prompts = {};
+  FIELDS.forEach(f => { prompts[f] = document.getElementById(`p-${f}`).value; });
+  const r = await post({ model: document.getElementById('f-model').value, prompts });
+  if (r) { clearDirty(); status('Saved', 'green'); }
+}
+
+async function saveKey() {
+  const input = document.getElementById('f-key');
+  const key   = input.value.trim();
+  if (!key) { status('Enter a key first', 'amber'); return; }
+  const r = await post({ anthropic_api_key: key });
+  if (r) { input.value = ''; renderKeyStatus(r.key_source); status('Key saved', 'green'); }
+}
+
+async function clearKey() {
+  if (!confirm('Remove the stored API key? Generation will stop working until you add another.')) return;
+  const r = await post({ anthropic_api_key: '__CLEAR__' });
+  if (r) { renderKeyStatus(r.key_source); status('Key removed', 'green'); }
+}
+
+load();
+</script>
+</body>
+</html>

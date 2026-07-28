@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, render_template
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
+import ai
 import db
 import storage
 
@@ -523,13 +524,16 @@ TERMINAL_STAGES = ['Invested', 'Passed']
 NOTE_FIELDS = (
     'business_description', 'thesis', 'pros', 'cons',
     'bull_case', 'bear_case', 'key_questions',
+    'business_description_detail', 'bull_case_detail', 'bear_case_detail',
 )
 
 _PROJECT_SELECT = (
     'SELECT p.id, p.name, p.ticker, p.direction, p.stage, p.thesis, p.rating, '
     'p.current_price, p.origin_idea_id, p.created_at, p.updated_at, '
     'p.business_description, p.pros, p.cons, p.bull_case, p.bear_case, '
-    'p.key_questions, '
+    'p.business_description_detail, p.bull_case_detail, p.bear_case_detail, '
+    'p.business_description_generated_at, p.bull_case_generated_at, '
+    'p.bear_case_generated_at, p.key_questions, '
     'p.attachment_url, p.attachment_name, '
     'p.idea_type_id, it.name AS idea_type_name, '
     'p.subtype_id,   st.name AS subtype_name, '
@@ -1252,6 +1256,156 @@ def market_tearsheet(ticker):
     if data['capitalization']['price'] is None:
         return jsonify({'error': f'No market data for {ticker}'}), 404
     return jsonify(data)
+
+
+# ── AI drafting ──────────────────────────────────────────────────────────────
+
+def _ai_context(project):
+    """Compact reference block handed to Claude alongside the prompt."""
+    lines = [
+        f"Project name: {project.get('name')}",
+        f"Ticker: {project.get('ticker') or 'none'}",
+        f"Direction: {project.get('direction') or 'undecided'}",
+        f"Stage: {project.get('stage')}",
+    ]
+    if project.get('idea_type_name'):
+        lines.append(f"Idea type: {project['idea_type_name']}")
+    if project.get('subtype_name'):
+        lines.append(f"Sub-type: {project['subtype_name']}")
+    if project.get('thesis'):
+        lines.append(f"\nThe user's own thesis so far:\n{project['thesis']}")
+
+    ticker = project.get('ticker')
+    if not ticker:
+        lines.append('\nNo ticker attached, so no market data is available.')
+        return '\n'.join(lines)
+
+    try:
+        t = _cached(f'tear:{ticker}', 900, lambda: _build_tearsheet(ticker))
+    except Exception as exc:
+        lines.append(f'\nMarket data unavailable ({exc}).')
+        return '\n'.join(lines)
+
+    def fmt(v):
+        # Round hard — full float precision is noise the model has to read past.
+        if not isinstance(v, float):
+            return v
+        if abs(v) >= 1e6:
+            return f'{v:,.0f}'
+        return f'{v:.2f}'.rstrip('0').rstrip('.')
+
+    def block(title, mapping):
+        rows = [f'  {k}: {fmt(v)}' for k, v in mapping.items() if v is not None]
+        return f'\n{title}\n' + '\n'.join(rows) if rows else ''
+
+    lines.append(f"\nCompany (per Yahoo Finance): {t.get('name') or ticker}")
+    lines.append(block('Capitalization (USD):', t['capitalization']))
+    lines.append(block('Technicals:', t['technicals']))
+    lines.append(block('Credit:', t['credit']))
+    lines.append(block('Valuation (trailing):', t['valuation']))
+    lines.append(block('Margins (trailing, %):', t['margins']))
+    lines.append(block('Growth (trailing, %):', t['growth']))
+    for row in t.get('consensus') or []:
+        lines.append(block(f"Consensus — {row['label']}:",
+                           {k: v for k, v in row.items() if k != 'label'}))
+    lines.append(
+        '\nNote: Yahoo publishes forward estimates for EPS and revenue only, two periods '
+        'out. Forward EBITDA, EBIT and FCF are not available, so every margin and '
+        'leverage figure above is trailing.'
+    )
+    return '\n'.join(l for l in lines if l)
+
+
+@app.route('/api/projects/<int:project_id>/generate/<field>', methods=['POST'])
+def generate_writeup(project_id, field):
+    if field not in ai.FIELDS:
+        return jsonify({'error': f'unknown field: {field}'}), 400
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        project = db.to_dict(cur.fetchone())
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+
+    try:
+        result = ai.generate(field, project, _ai_context(project))
+    except ai.NotConfigured as exc:
+        return jsonify({'error': str(exc)}), 503
+    except ai.Refused as exc:
+        return jsonify({'error': str(exc)}), 422
+    except Exception as exc:
+        return jsonify({'error': f'Generation failed: {exc}'}), 502
+
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE projects SET {field} = {db.PH}, {field}_detail = {db.PH}, '
+            f'{field}_generated_at = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
+            (result['summary'], result['detail'], now, now, project_id),
+        )
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        row = db.to_dict(cur.fetchone())
+    return jsonify(row)
+
+
+@app.route('/projects/<int:project_id>/detail/<field>')
+def writeup_detail(project_id, field):
+    if field not in ai.FIELDS:
+        return 'Unknown section', 404
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+        project = db.to_dict(cur.fetchone())
+    if not project:
+        return 'Project not found', 404
+    return render_template(
+        'detail.html', project=project, field=field, label=ai.FIELDS[field]
+    )
+
+
+# ── Admin / settings ─────────────────────────────────────────────────────────
+# The API key is never returned by the API — only whether one is set and where
+# it came from. An env-provided key can't be edited or read back through the UI.
+
+@app.route('/admin')
+def admin_page():
+    return render_template('admin.html', fields=ai.FIELDS, models=ai.MODELS)
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    return jsonify({
+        'key_source':      ai.key_source(),
+        'model':           ai.model(),
+        'models':          [{'id': m, 'label': l} for m, l in ai.MODELS],
+        'prompts':         {f: ai.prompt_for(f) for f in ai.FIELDS},
+        'default_prompts': ai.DEFAULT_PROMPTS,
+        'system_prompt':   ai.SYSTEM_PROMPT,
+    })
+
+
+@app.route('/api/settings', methods=['POST'])
+def save_settings():
+    data = request.get_json(force=True)
+
+    # An empty string means "leave it alone"; the sentinel below clears it.
+    if 'anthropic_api_key' in data:
+        key = (data.get('anthropic_api_key') or '').strip()
+        if key == '__CLEAR__':
+            db.set_setting('anthropic_api_key', '')
+        elif key:
+            db.set_setting('anthropic_api_key', key)
+
+    if data.get('model') in dict(ai.MODELS):
+        db.set_setting('ai_model', data['model'])
+
+    for field, text in (data.get('prompts') or {}).items():
+        if field in ai.FIELDS:
+            db.set_setting(f'prompt_{field}', (text or '').strip())
+
+    return jsonify({'ok': True, 'key_source': ai.key_source(), 'model': ai.model()})
 
 
 @app.route('/api/stock-price')

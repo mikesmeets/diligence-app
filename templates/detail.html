@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ label }} — {{ project.name }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .spin { animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .md h1 { font-size:1.5rem; font-weight:700; color:#111827; margin:1.75rem 0 .75rem; }
+    .md h2 { font-size:1.25rem; font-weight:700; color:#111827; margin:1.5rem 0 .6rem; }
+    .md h3 { font-size:1rem; font-weight:700; color:#374151; margin:1.25rem 0 .5rem; }
+    .md p  { margin:.75rem 0; line-height:1.75; color:#1f2937; }
+    .md ul, .md ol { margin:.75rem 0 .75rem 1.5rem; }
+    .md ul { list-style:disc; } .md ol { list-style:decimal; }
+    .md li { margin:.35rem 0; line-height:1.7; color:#1f2937; }
+    .md code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.875em;
+               background:#f3f4f6; padding:.1rem .3rem; border-radius:.25rem; }
+    .md strong { font-weight:600; color:#111827; }
+    .md hr { margin:1.5rem 0; border-color:#e5e7eb; }
+    .md blockquote { border-left:3px solid #e5e7eb; padding-left:1rem; color:#4b5563; margin:.75rem 0; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-3xl mx-auto flex items-center justify-between gap-4">
+    <div class="flex items-center gap-4 min-w-0">
+      <a href="/projects/{{ project.id }}" class="text-sm text-gray-500 hover:text-gray-700 transition-colors whitespace-nowrap">← {{ project.name }}</a>
+      <div class="h-4 w-px bg-gray-200"></div>
+      <div class="min-w-0">
+        <h1 class="text-xl font-bold text-gray-900 tracking-tight truncate">{{ label }}</h1>
+        <p class="text-xs text-gray-400 mt-0.5" id="generated-at"></p>
+      </div>
+    </div>
+    <div class="flex gap-2 flex-shrink-0">
+      <button id="gen-btn" onclick="generate()"
+        class="px-3 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors">
+        ✦ Regenerate
+      </button>
+      <button id="edit-btn" onclick="startEdit()"
+        class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+        Edit
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-3xl mx-auto px-6 py-8 space-y-5">
+
+  <!-- Summary -->
+  <div class="bg-white rounded-xl border-l-4 border-blue-500 border-y border-r border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Summary</p>
+    <p id="summary" class="text-gray-800 leading-relaxed"></p>
+  </div>
+
+  <!-- Full write-up -->
+  <div class="bg-white rounded-xl border border-gray-200 p-6">
+    <div id="view" class="md"></div>
+    <div id="edit" class="hidden">
+      <textarea id="ta" rows="28"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+      <div class="flex gap-2 mt-3">
+        <button onclick="saveEdit()"
+          class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+        <button onclick="cancelEdit()"
+          class="px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
+        <span id="edit-status" class="text-xs text-gray-400 self-center"></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs text-gray-300 leading-relaxed px-1">
+    Drafted by Claude from the project's details and its Yahoo Finance tearsheet. Treat it as
+    a starting point to argue with — verify the figures before you rely on any of them.
+  </p>
+
+</main>
+
+<script>
+const PROJECT_ID = {{ project.id }};
+const FIELD      = {{ field | tojson }};
+const LABEL      = {{ label | tojson }};
+
+let summary   = {{ (project[field] or '') | tojson }};
+let detail    = {{ (project[field ~ '_detail'] or '') | tojson }};
+let generated = {{ (project[field ~ '_generated_at'] or '') | tojson }};
+
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Small Markdown subset — headings, lists, quotes, rules, bold/italic/code.
+// Everything is escaped first, so model output can't inject markup.
+function renderMd(src) {
+  const inline = (t) => escHtml(t)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+
+  const out = [];
+  let list = null, para = [];
+
+  const flushPara = () => {
+    if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; }
+  };
+  const flushList = () => {
+    if (list) { out.push(`</${list}>`); list = null; }
+  };
+
+  for (const raw of String(src ?? '').split('\n')) {
+    const line = raw.trimEnd();
+
+    if (!line.trim())                    { flushPara(); flushList(); continue; }
+    if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flushPara(); flushList(); out.push('<hr>'); continue; }
+
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { flushPara(); flushList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+
+    const q = line.match(/^>\s?(.*)$/);
+    if (q) { flushPara(); flushList(); out.push(`<blockquote>${inline(q[1])}</blockquote>`); continue; }
+
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const want = ul ? 'ul' : 'ol';
+      if (list !== want) { flushList(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      continue;
+    }
+
+    flushList();
+    para.push(line.trim());
+  }
+  flushPara(); flushList();
+  return out.join('\n');
+}
+
+function render() {
+  document.getElementById('summary').innerHTML = summary
+    ? escHtml(summary)
+    : '<span class="text-gray-400">Nothing yet — hit Regenerate, or write it yourself.</span>';
+
+  document.getElementById('view').innerHTML = detail
+    ? renderMd(detail)
+    : `<p class="text-gray-400 text-sm">No write-up yet. Generate one with Claude, or click Edit to write it yourself.</p>`;
+
+  document.getElementById('generated-at').textContent =
+    generated ? `Drafted ${new Date(generated).toLocaleString()}` : '';
+
+  document.getElementById('gen-btn').textContent = detail ? '✦ Regenerate' : '✦ Generate';
+}
+
+async function generate() {
+  const btn = document.getElementById('gen-btn');
+  if (detail && !confirm(`Replace the current ${LABEL.toLowerCase()} with a fresh draft?`)) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">✦</span> Drafting…';
+  try {
+    const res = await fetch(`/api/projects/${PROJECT_ID}/generate/${FIELD}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Generation failed'); return; }
+    summary   = data[FIELD] || '';
+    detail    = data[`${FIELD}_detail`] || '';
+    generated = data[`${FIELD}_generated_at`] || '';
+    render();
+  } catch (e) {
+    alert('Generation failed — check the network and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+    render();
+  }
+}
+
+function startEdit() {
+  document.getElementById('view').classList.add('hidden');
+  document.getElementById('edit').classList.remove('hidden');
+  document.getElementById('edit-btn').classList.add('hidden');
+  const ta = document.getElementById('ta');
+  ta.value = detail;
+  ta.focus();
+}
+
+function cancelEdit() {
+  document.getElementById('edit').classList.add('hidden');
+  document.getElementById('view').classList.remove('hidden');
+  document.getElementById('edit-btn').classList.remove('hidden');
+  document.getElementById('edit-status').textContent = '';
+}
+
+async function saveEdit() {
+  const status = document.getElementById('edit-status');
+  status.textContent = 'Saving…';
+  const res = await fetch(`/api/projects/${PROJECT_ID}/notes`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [`${FIELD}_detail`]: document.getElementById('ta').value }),
+  });
+  if (!res.ok) { status.textContent = 'Failed to save'; return; }
+  const saved = await res.json();
+  detail = saved[`${FIELD}_detail`] || '';
+  render();
+  cancelEdit();
+}
+
+render();
+</script>
+</body>
+</html>

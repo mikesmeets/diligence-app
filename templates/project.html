@@ -163,13 +163,18 @@
   {% endif %}
 
   <!-- Write-up: business description, thesis, pros/cons, key questions -->
-  {% macro panel(field, label, placeholder, note='', tone='') %}
+  {% macro panel(field, label, placeholder, note='', tone='', ai=false) %}
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <div class="flex items-baseline justify-between mb-3 gap-3">
       <p class="text-xs font-semibold uppercase tracking-wide
         {{ 'text-green-600' if tone == 'bull' else 'text-red-500' if tone == 'bear' else 'text-gray-400' }}">{{ label }}</p>
       <div class="flex items-baseline gap-3">
         {% if note %}<span class="text-xs text-gray-300 hidden sm:inline">{{ note }}</span>{% endif %}
+        {% if ai %}
+        <button id="gen-{{ field }}" onclick="generateNote('{{ field }}')"
+          title="Draft this with Claude"
+          class="text-xs text-blue-600 hover:text-blue-800 transition-colors">✦ Draft</button>
+        {% endif %}
         <button id="btn-{{ field }}" onclick="editNote('{{ field }}')"
           class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Edit</button>
       </div>
@@ -186,10 +191,17 @@
         <span id="status-{{ field }}" class="text-xs text-gray-400 self-center"></span>
       </div>
     </div>
+    {% if ai %}
+    <a id="more-{{ field }}" href="/projects/{{ project.id }}/detail/{{ field }}"
+      class="{{ '' if project[field ~ '_detail'] else 'hidden' }} inline-block mt-3 text-xs text-blue-600 hover:text-blue-800 transition-colors">
+      Read the full write-up →
+    </a>
+    {% endif %}
   </div>
   {% endmacro %}
 
-  {{ panel('business_description', 'Business Description', 'What does this company actually do? How does it make money?') }}
+  {{ panel('business_description', 'Business Description',
+           'What does this company actually do? How does it make money?', '', '', true) }}
 
   {{ panel('thesis', 'Thesis',
            'What is the view, and why is it different from the market?',
@@ -202,9 +214,9 @@
 
   <div class="grid md:grid-cols-2 gap-5">
     {{ panel('bull_case', 'Bull Case',
-             'What has to go right, and what is it worth if it does?', '', 'bull') }}
+             'What has to go right, and what is it worth if it does?', '', 'bull', true) }}
     {{ panel('bear_case', 'Bear Case',
-             'What has to go wrong, and where does it trade if it does?', '', 'bear') }}
+             'What has to go wrong, and where does it trade if it does?', '', 'bear', true) }}
   </div>
 
   <!-- Key questions: each expands to hold what you've since found out -->
@@ -363,6 +375,31 @@ async function saveNote(f) {
     cancelNote(f);
   } catch (e) {
     status.textContent = 'Failed to save';
+  }
+}
+
+async function generateNote(field) {
+  const btn = document.getElementById(`gen-${field}`);
+  if ((NOTES[field] || '').trim() &&
+      !confirm('Replace what is there with a fresh draft from Claude?')) return;
+
+  const original = btn.textContent;
+  btn.textContent = '✦ Drafting…';
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`/api/projects/${PROJECT_ID}/generate/${field}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Generation failed'); return; }
+    NOTES[field] = data[field] || '';
+    renderNote(field);
+    // The full write-up now exists, so reveal the link through to it.
+    const more = document.getElementById(`more-${field}`);
+    if (more && data[`${field}_detail`]) more.classList.remove('hidden');
+  } catch (e) {
+    alert('Generation failed — check the network and try again.');
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
   }
 }
 
