@@ -1,0 +1,94 @@
+{# Shell for the per-project sub-pages (notes, documents, model). #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}{{ project.name }}{% endblock %} — Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .spin { animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    {% block styles %}{% endblock %}
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-4xl mx-auto">
+    <div class="flex items-center gap-4">
+      <a href="/projects" class="text-sm text-gray-500 hover:text-gray-700 transition-colors whitespace-nowrap">← All Projects</a>
+      <div class="h-4 w-px bg-gray-200"></div>
+      <div class="flex items-baseline gap-2 min-w-0">
+        <span class="text-xl font-bold text-gray-900 tracking-tight truncate">{{ project.name }}</span>
+        {% if project.ticker %}
+          <span class="font-mono text-sm font-semibold text-gray-400">{{ project.ticker }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% include '_project_nav.html' %}
+  </div>
+</header>
+
+<main class="max-w-4xl mx-auto px-6 py-8 space-y-5">
+  {% if not storage_enabled %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 text-sm text-amber-800 leading-relaxed">
+    <strong class="font-semibold">File storage isn't configured, so uploads are disabled.</strong>
+    Set <code class="font-mono text-xs">AWS_ENDPOINT_URL</code>,
+    <code class="font-mono text-xs">AWS_S3_BUCKET_NAME</code>,
+    <code class="font-mono text-xs">AWS_ACCESS_KEY_ID</code> and
+    <code class="font-mono text-xs">AWS_SECRET_ACCESS_KEY</code> on the service to enable them.
+  </div>
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+
+<script>
+const PROJECT_ID     = {{ project.id }};
+const MAX_MB         = {{ max_mb }};
+const STORAGE_ENABLED = {{ storage_enabled | tojson }};
+
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fmtSize(bytes) {
+  if (bytes == null) return '';
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024)        return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString(undefined,
+    { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDay(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined,
+    { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// Reject oversized files here so a big upload fails instantly instead of
+// travelling all the way to the server to be refused.
+function tooBig(file) {
+  if (file.size <= MAX_MB * 1024 * 1024) return false;
+  alert(`"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is ${MAX_MB} MB.`);
+  return true;
+}
+
+async function apiError(res) {
+  const body = await res.text();
+  try { return JSON.parse(body).error || `Server error ${res.status}.`; }
+  catch (e) { return `Server error ${res.status}.`; }
+}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

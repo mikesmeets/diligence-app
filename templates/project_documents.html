@@ -1,0 +1,208 @@
+{% extends '_project_page.html' %}
+{% block title %}Documents — {{ project.name }}{% endblock %}
+
+{% block content %}
+<!-- Upload -->
+<div class="bg-white rounded-xl border border-gray-200 p-5">
+  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Add a document</p>
+  <div class="grid md:grid-cols-2 gap-3">
+    <div class="md:col-span-2">
+      <input id="f-file" type="file" {{ '' if storage_enabled else 'disabled' }}
+        onchange="fillTitleFromFile()"
+        class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
+    </div>
+    <div class="md:col-span-2">
+      <label class="block text-xs font-medium text-gray-500 mb-1">Title</label>
+      <input id="f-title" type="text" placeholder="Defaults to the filename"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Type</label>
+      <div class="flex gap-2">
+        <select id="f-type"
+          class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+          <option value="">Untyped</option>
+        </select>
+        <button onclick="openTypes()" title="Manage types"
+          class="px-2.5 border border-gray-200 rounded-lg text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors text-sm">⚙</button>
+      </div>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-500 mb-1">Document date</label>
+      <input id="f-date" type="date"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+    </div>
+  </div>
+  <button id="up-btn" onclick="upload()"
+    class="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
+    Upload
+  </button>
+</div>
+
+<div id="docs"></div>
+
+<!-- Manage types -->
+<div id="types-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-900">Document Types</h2>
+      <button onclick="closeTypes()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="px-6 py-4 space-y-3">
+      <div class="flex gap-2">
+        <input id="new-type" type="text" placeholder="New type…"
+          class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        <button onclick="addType()"
+          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Add</button>
+      </div>
+      <ul id="types-list" class="divide-y divide-gray-100 max-h-60 overflow-y-auto rounded-lg border border-gray-200"></ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let docs = [], types = [];
+
+async function load() {
+  const [d, t] = await Promise.all([
+    fetch(`/api/projects/${PROJECT_ID}/documents`).then(r => r.json()),
+    fetch('/api/doc-types').then(r => r.json()),
+  ]);
+  docs = d; types = t;
+  fillTypeSelect();
+  renderTypes();
+  render();
+}
+
+function fillTypeSelect(selected) {
+  const sel = document.getElementById('f-type');
+  const cur = selected ?? (parseInt(sel.value) || null);
+  sel.innerHTML = '<option value="">Untyped</option>' +
+    types.map(t => `<option value="${t.id}" ${t.id === cur ? 'selected' : ''}>${escHtml(t.name)}</option>`).join('');
+}
+
+function fillTitleFromFile() {
+  const f = document.getElementById('f-file').files[0];
+  const title = document.getElementById('f-title');
+  if (f && !title.value.trim()) title.value = f.name.replace(/\.[^.]+$/, '');
+}
+
+function render() {
+  const el = document.getElementById('docs');
+  if (docs.length === 0) {
+    el.innerHTML = `<div class="text-center py-16 text-gray-400">
+      <div class="text-4xl mb-3">📄</div>
+      <p class="text-sm">No documents yet. Decks, transcripts, filings — anything you want kept with the project.</p>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = `<div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+    ${docs.map(d => `
+      <div class="flex items-center gap-4 px-5 py-3">
+        <div class="min-w-0 flex-1">
+          <a href="/api/documents/${d.id}/download" target="_blank"
+             class="text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors">${escHtml(d.title)}</a>
+          <div class="flex items-center gap-2 mt-0.5 text-xs text-gray-400 flex-wrap">
+            ${d.doc_type_name ? `<span class="bg-gray-100 text-gray-600 rounded px-1.5 py-0.5">${escHtml(d.doc_type_name)}</span>` : ''}
+            ${d.doc_date ? `<span>${fmtDay(d.doc_date)}</span>` : ''}
+            <span class="truncate max-w-[220px]">${escHtml(d.filename)}</span>
+            <span>${fmtSize(d.size_bytes)}</span>
+          </div>
+        </div>
+        <div class="flex gap-3 flex-shrink-0">
+          <button onclick="editDoc(${d.id})" class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Edit</button>
+          <button onclick="removeDoc(${d.id})" class="text-xs text-gray-300 hover:text-red-500 transition-colors">Delete</button>
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+
+async function upload() {
+  const file = document.getElementById('f-file').files[0];
+  if (!file) { alert('Choose a file first.'); return; }
+  if (tooBig(file)) return;
+
+  const btn = document.getElementById('up-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('title', document.getElementById('f-title').value.trim());
+    const type = document.getElementById('f-type').value;
+    if (type) fd.append('doc_type_id', type);
+    const date = document.getElementById('f-date').value;
+    if (date) fd.append('doc_date', date);
+
+    const res = await fetch(`/api/projects/${PROJECT_ID}/documents`, { method: 'POST', body: fd });
+    if (!res.ok) { alert(await apiError(res)); return; }
+    ['f-file', 'f-title', 'f-date'].forEach(id => document.getElementById(id).value = '');
+    await load();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+  }
+}
+
+async function editDoc(id) {
+  const d = docs.find(x => x.id === id);
+  const title = prompt('Title:', d.title);
+  if (title === null || !title.trim()) return;
+  const date = prompt('Document date (YYYY-MM-DD, blank for none):', d.doc_date || '');
+  if (date === null) return;
+  const res = await fetch(`/api/documents/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: title.trim(), doc_date: date.trim() }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  await load();
+}
+
+async function removeDoc(id) {
+  if (!confirm('Delete this document? The file is removed from storage too.')) return;
+  await fetch(`/api/documents/${id}`, { method: 'DELETE' });
+  await load();
+}
+
+// ── Types ──────────────────────────────────────────────────────────────────
+function openTypes()  { renderTypes(); document.getElementById('types-modal').classList.remove('hidden'); }
+function closeTypes() { document.getElementById('types-modal').classList.add('hidden'); }
+
+function renderTypes() {
+  const ul = document.getElementById('types-list');
+  ul.innerHTML = types.length === 0
+    ? '<li class="px-3 py-3 text-sm text-gray-400">No types yet.</li>'
+    : types.map(t => `
+      <li class="flex items-center justify-between px-3 py-2 text-sm">
+        <span class="text-gray-800">${escHtml(t.name)}</span>
+        <button onclick="removeType(${t.id})" class="text-gray-300 hover:text-red-500 transition-colors text-xs ml-3">Delete</button>
+      </li>`).join('');
+}
+
+async function addType() {
+  const input = document.getElementById('new-type');
+  const name  = input.value.trim();
+  if (!name) return;
+  const res = await fetch('/api/doc-types', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  input.value = '';
+  await load();
+  openTypes();
+}
+
+async function removeType(id) {
+  if (!confirm('Delete this type? Documents using it become untyped.')) return;
+  await fetch(`/api/doc-types/${id}`, { method: 'DELETE' });
+  await load();
+  openTypes();
+}
+
+load();
+</script>
+{% endblock %}

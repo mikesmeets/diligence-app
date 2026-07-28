@@ -44,12 +44,17 @@ def upload(file_bytes: bytes, filename: str) -> str:
     return key
 
 
-def presigned_url(key: str, expires: int = 3600) -> str:
-    """Return a presigned GET URL valid for `expires` seconds."""
+def presigned_url(key: str, expires: int = 3600, download_as: str = None) -> str:
+    """Return a presigned GET URL valid for `expires` seconds.
+
+    Pass download_as to force a save-as with that filename rather than letting
+    the browser try to display it — right for spreadsheets and decks.
+    """
+    params = {'Bucket': _BUCKET, 'Key': key}
+    if download_as:
+        params['ResponseContentDisposition'] = f'attachment; filename="{download_as}"'
     return _client().generate_presigned_url(
-        'get_object',
-        Params={'Bucket': _BUCKET, 'Key': key},
-        ExpiresIn=expires,
+        'get_object', Params=params, ExpiresIn=expires,
     )
 
 

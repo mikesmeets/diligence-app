@@ -1,0 +1,152 @@
+{% extends '_project_page.html' %}
+{% block title %}Notes — {{ project.name }}{% endblock %}
+
+{% block content %}
+<!-- Composer -->
+<div class="bg-white rounded-xl border border-gray-200 p-5">
+  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">New note</p>
+  <textarea id="new-body" rows="4" placeholder="What did you learn?"
+    class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+  <div class="flex items-center justify-between gap-3 mt-3 flex-wrap">
+    <input id="new-files" type="file" multiple {{ '' if storage_enabled else 'disabled' }}
+      class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
+    <button id="add-btn" onclick="addNote()"
+      class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
+      Add note
+    </button>
+  </div>
+</div>
+
+<div id="notes"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let notes = [];
+const openEdit = new Set();
+
+async function load() {
+  const res = await fetch(`/api/projects/${PROJECT_ID}/notes`);
+  notes = res.ok ? await res.json() : [];
+  render();
+}
+
+function attachmentChip(a) {
+  return `<span class="inline-flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-lg pl-2.5 pr-1.5 py-1 text-xs">
+    <a href="/api/attachments/${a.id}/download" target="_blank"
+       class="text-blue-600 hover:text-blue-800 transition-colors">${escHtml(a.filename)}</a>
+    <span class="text-gray-300">${fmtSize(a.size_bytes)}</span>
+    <button onclick="removeAttachment(${a.id})" title="Remove file"
+      class="text-gray-300 hover:text-red-500 transition-colors px-1">×</button>
+  </span>`;
+}
+
+function render() {
+  const el = document.getElementById('notes');
+  if (notes.length === 0) {
+    el.innerHTML = `<div class="text-center py-16 text-gray-400">
+      <div class="text-4xl mb-3">📝</div>
+      <p class="text-sm">No notes yet. The box above is a running log — findings, calls, second thoughts.</p>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = notes.map(n => {
+    const editing = openEdit.has(n.id);
+    return `
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <div class="flex items-baseline justify-between gap-3 mb-2">
+        <span class="text-xs text-gray-400">${fmtWhen(n.created_at)}${
+          n.updated_at && n.updated_at !== n.created_at ? ' · edited' : ''}</span>
+        <div class="flex gap-3 flex-shrink-0">
+          <button onclick="toggleEdit(${n.id})" class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${editing ? 'Cancel' : 'Edit'}</button>
+          <label class="text-xs text-gray-400 hover:text-blue-600 transition-colors cursor-pointer ${STORAGE_ENABLED ? '' : 'hidden'}">
+            Attach
+            <input type="file" class="hidden" onchange="attachTo(${n.id}, this)" />
+          </label>
+          <button onclick="removeNote(${n.id})" class="text-xs text-gray-300 hover:text-red-500 transition-colors">Delete</button>
+        </div>
+      </div>
+
+      ${editing ? `
+        <textarea id="edit-${n.id}" rows="5"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500">${escHtml(n.body)}</textarea>
+        <button onclick="saveNote(${n.id})"
+          class="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+      ` : `
+        <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">${escHtml(n.body) || '<span class="text-gray-400">(no text)</span>'}</p>
+      `}
+
+      ${(n.attachments || []).length
+        ? `<div class="flex flex-wrap gap-2 mt-3">${n.attachments.map(attachmentChip).join('')}</div>`
+        : ''}
+    </div>`;
+  }).join('');
+}
+
+function toggleEdit(id) {
+  openEdit.has(id) ? openEdit.delete(id) : openEdit.add(id);
+  render();
+}
+
+async function addNote() {
+  const body  = document.getElementById('new-body').value.trim();
+  const files = Array.from(document.getElementById('new-files').files || []);
+  if (!body && !files.length) { alert('Write something or attach a file.'); return; }
+  if (files.some(tooBig)) return;
+
+  const btn = document.getElementById('add-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const fd = new FormData();
+    fd.append('body', body);
+    files.forEach(f => fd.append('files', f));
+    const res = await fetch(`/api/projects/${PROJECT_ID}/notes`, { method: 'POST', body: fd });
+    if (!res.ok) { alert(await apiError(res)); return; }
+    document.getElementById('new-body').value  = '';
+    document.getElementById('new-files').value = '';
+    await load();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add note';
+  }
+}
+
+async function saveNote(id) {
+  const body = document.getElementById(`edit-${id}`).value;
+  const res  = await fetch(`/api/notes/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  openEdit.delete(id);
+  await load();
+}
+
+async function removeNote(id) {
+  if (!confirm('Delete this note and its files?')) return;
+  await fetch(`/api/notes/${id}`, { method: 'DELETE' });
+  await load();
+}
+
+async function attachTo(noteId, input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file || tooBig(file)) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(`/api/notes/${noteId}/attachments`, { method: 'POST', body: fd });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  await load();
+}
+
+async function removeAttachment(id) {
+  if (!confirm('Remove this file?')) return;
+  await fetch(`/api/attachments/${id}`, { method: 'DELETE' });
+  await load();
+}
+
+load();
+</script>
+{% endblock %}

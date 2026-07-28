@@ -14,7 +14,12 @@ import db
 import storage
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB upload limit
+
+# Decks and Excel models run well past the old 20 MB ceiling. The request cap
+# sits above the per-file limit so an oversized upload is rejected with a
+# readable message rather than a bare 413 from Werkzeug.
+MAX_UPLOAD_MB = 50
+app.config['MAX_CONTENT_LENGTH'] = (MAX_UPLOAD_MB + 10) * 1024 * 1024
 logging.basicConfig(level=logging.INFO)
 db.init()
 db.migrate()
@@ -926,9 +931,21 @@ def delete_project(project_id):
             storage.delete(row['attachment_key'])
         # SQLite doesn't enforce foreign keys by default, so the ON DELETE
         # CASCADE can't be relied on — clear the children explicitly.
+        # Collect every bucket object this project owns before dropping the rows,
+        # or the files are orphaned in storage with nothing pointing at them.
+        keys = []
+        for table in ('note_attachments', 'project_documents', 'model_versions'):
+            cur.execute(
+                f'SELECT object_key FROM {table} WHERE project_id = {db.PH}', (project_id,),
+            )
+            keys += [r['object_key'] for r in db.to_dicts(cur.fetchall())]
+            cur.execute(f'DELETE FROM {table} WHERE project_id = {db.PH}', (project_id,))
+
+        cur.execute(f'DELETE FROM project_notes WHERE project_id = {db.PH}', (project_id,))
         cur.execute(f'DELETE FROM project_questions WHERE project_id = {db.PH}', (project_id,))
         cur.execute(f'DELETE FROM generation_jobs WHERE project_id = {db.PH}', (project_id,))
         cur.execute(f'DELETE FROM projects WHERE id = {db.PH}', (project_id,))
+    _delete_keys(keys)
     return jsonify({'ok': True})
 
 
@@ -1279,6 +1296,456 @@ def market_tearsheet(ticker):
     if data['capitalization']['price'] is None:
         return jsonify({'error': f'No market data for {ticker}'}), 404
     return jsonify(data)
+
+
+# ── Research material: notes, documents, model versions ──────────────────────
+# All of this goes to the object store. Unlike the single idea attachment, these
+# are decks and Excel models — keeping them as Postgres blobs would bloat the
+# database, so the bucket is required here rather than optional.
+
+def _bucket_missing():
+    if storage.ENABLED:
+        return None
+    return jsonify({
+        'error': 'File storage is not configured, so uploads are disabled. Set '
+                 'AWS_ENDPOINT_URL, AWS_S3_BUCKET_NAME, AWS_ACCESS_KEY_ID and '
+                 'AWS_SECRET_ACCESS_KEY on the service.'
+    }), 503
+
+
+def _project_exists(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT id, name, ticker FROM projects WHERE id = {db.PH}', (project_id,))
+        return db.to_dict(cur.fetchone())
+
+
+def _store_upload(file_obj):
+    """Upload one file to the bucket. Returns (info, None) or (None, response)."""
+    if not file_obj or not file_obj.filename:
+        return None, (jsonify({'error': 'No file supplied'}), 400)
+    raw = file_obj.read()
+    if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
+        return None, (jsonify({
+            'error': f'"{file_obj.filename}" exceeds the {MAX_UPLOAD_MB} MB limit '
+                     f'({len(raw) / 1024 / 1024:.1f} MB).'
+        }), 413)
+    try:
+        key = storage.upload(raw, file_obj.filename)
+    except Exception as exc:
+        return None, (jsonify({'error': f'Upload failed: {exc}'}), 502)
+    return {'filename': file_obj.filename, 'object_key': key, 'size_bytes': len(raw)}, None
+
+
+def _redirect_to_file(object_key, filename, force_download=False):
+    from flask import redirect
+    return redirect(storage.presigned_url(
+        object_key, download_as=filename if force_download else None,
+    ))
+
+
+def _delete_keys(keys):
+    for key in keys:
+        if key:
+            storage.delete(key)
+
+
+# ── Notes ───────────────────────────────────────────────────────────────────
+
+def _notes_for(cur, project_id):
+    cur.execute(
+        f'SELECT id, body, created_at, updated_at FROM project_notes '
+        f'WHERE project_id = {db.PH} ORDER BY created_at DESC, id DESC',
+        (project_id,),
+    )
+    notes = db.to_dicts(cur.fetchall())
+    if not notes:
+        return []
+    cur.execute(
+        f'SELECT id, note_id, filename, size_bytes, created_at FROM note_attachments '
+        f'WHERE project_id = {db.PH} ORDER BY id',
+        (project_id,),
+    )
+    by_note = {}
+    for att in db.to_dicts(cur.fetchall()):
+        by_note.setdefault(att['note_id'], []).append(att)
+    for note in notes:
+        note['attachments'] = by_note.get(note['id'], [])
+    return notes
+
+
+@app.route('/api/projects/<int:project_id>/notes', methods=['GET'])
+def get_notes(project_id):
+    with db.get_conn() as conn:
+        return jsonify(_notes_for(db.cursor(conn), project_id))
+
+
+@app.route('/api/projects/<int:project_id>/notes', methods=['POST'])
+def create_note(project_id):
+    # Accepts multipart (body + any number of files) or plain JSON (body only).
+    if request.content_type and 'multipart' in request.content_type:
+        body = (request.form.get('body') or '').strip()
+        files = [f for f in request.files.getlist('files') if f and f.filename]
+    else:
+        body = (request.get_json(force=True).get('body') or '').strip()
+        files = []
+
+    if not body and not files:
+        return jsonify({'error': 'A note needs some text or a file'}), 400
+    if files and (missing := _bucket_missing()):
+        return missing
+
+    stored = []
+    for f in files:
+        info, err = _store_upload(f)
+        if err:
+            _delete_keys(s['object_key'] for s in stored)   # don't orphan objects
+            return err
+        stored.append(info)
+
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        note_id = db.insert_id(
+            cur, 'project_notes',
+            ('project_id', 'body', 'created_at', 'updated_at'),
+            (project_id, body, now, now),
+        )
+        for s in stored:
+            db.insert_id(
+                cur, 'note_attachments',
+                ('note_id', 'project_id', 'filename', 'object_key', 'size_bytes', 'created_at'),
+                (note_id, project_id, s['filename'], s['object_key'], s['size_bytes'], now),
+            )
+        notes = _notes_for(cur, project_id)
+    return jsonify(next((n for n in notes if n['id'] == note_id), None)), 201
+
+
+@app.route('/api/notes/<int:note_id>', methods=['PATCH'])
+def update_note(note_id):
+    body = (request.get_json(force=True).get('body') or '').strip()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE project_notes SET body = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
+            (body, datetime.now().isoformat(), note_id),
+        )
+        cur.execute(
+            f'SELECT id, project_id, body, created_at, updated_at FROM project_notes '
+            f'WHERE id = {db.PH}', (note_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
+@app.route('/api/notes/<int:note_id>', methods=['DELETE'])
+def delete_note(note_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT object_key FROM note_attachments WHERE note_id = {db.PH}', (note_id,),
+        )
+        keys = [r['object_key'] for r in db.to_dicts(cur.fetchall())]
+        cur.execute(f'DELETE FROM note_attachments WHERE note_id = {db.PH}', (note_id,))
+        cur.execute(f'DELETE FROM project_notes WHERE id = {db.PH}', (note_id,))
+    _delete_keys(keys)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/notes/<int:note_id>/attachments', methods=['POST'])
+def add_note_attachment(note_id):
+    if missing := _bucket_missing():
+        return missing
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT project_id FROM project_notes WHERE id = {db.PH}', (note_id,))
+        note = db.to_dict(cur.fetchone())
+    if not note:
+        return jsonify({'error': 'Note not found'}), 404
+
+    info, err = _store_upload(request.files.get('file'))
+    if err:
+        return err
+
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        att_id = db.insert_id(
+            cur, 'note_attachments',
+            ('note_id', 'project_id', 'filename', 'object_key', 'size_bytes', 'created_at'),
+            (note_id, note['project_id'], info['filename'], info['object_key'],
+             info['size_bytes'], now),
+        )
+    return jsonify({'id': att_id, 'note_id': note_id, **info, 'created_at': now}), 201
+
+
+@app.route('/api/attachments/<int:attachment_id>', methods=['DELETE'])
+def delete_note_attachment(attachment_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT object_key FROM note_attachments WHERE id = {db.PH}', (attachment_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+        cur.execute(f'DELETE FROM note_attachments WHERE id = {db.PH}', (attachment_id,))
+    if row:
+        _delete_keys([row['object_key']])
+    return jsonify({'ok': True})
+
+
+@app.route('/api/attachments/<int:attachment_id>/download')
+def download_note_attachment(attachment_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT filename, object_key FROM note_attachments WHERE id = {db.PH}',
+            (attachment_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return _redirect_to_file(row['object_key'], row['filename'])
+
+
+# ── Document types (user-managed, like sources) ─────────────────────────────
+
+@app.route('/api/doc-types', methods=['GET'])
+def get_doc_types():
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute('SELECT id, name FROM doc_types ORDER BY name')
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/doc-types', methods=['POST'])
+def create_doc_type():
+    name = (request.get_json(force=True).get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO doc_types (name) VALUES ({db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id, name',
+                (name,),
+            )
+            row = db.to_dict(cur.fetchone())
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO doc_types (name) VALUES ({db.PH})', (name,))
+            cur.execute(f'SELECT id, name FROM doc_types WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/doc-types/<int:type_id>', methods=['DELETE'])
+def delete_doc_type(type_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'DELETE FROM doc_types WHERE id = {db.PH}', (type_id,))
+    return jsonify({'ok': True})
+
+
+# ── Documents ───────────────────────────────────────────────────────────────
+
+_DOC_SELECT = (
+    'SELECT d.id, d.title, d.doc_type_id, dt.name AS doc_type_name, d.doc_date, '
+    'd.filename, d.size_bytes, d.created_at '
+    'FROM project_documents d LEFT JOIN doc_types dt ON d.doc_type_id = dt.id '
+)
+
+
+@app.route('/api/projects/<int:project_id>/documents', methods=['GET'])
+def get_documents(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            _DOC_SELECT + f'WHERE d.project_id = {db.PH} '
+            f'ORDER BY COALESCE(d.doc_date, d.created_at) DESC, d.id DESC',
+            (project_id,),
+        )
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/projects/<int:project_id>/documents', methods=['POST'])
+def create_document(project_id):
+    if missing := _bucket_missing():
+        return missing
+
+    info, err = _store_upload(request.files.get('file'))
+    if err:
+        return err
+
+    data  = request.form
+    title = (data.get('title') or '').strip() or info['filename']
+    now   = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        doc_id = db.insert_id(
+            cur, 'project_documents',
+            ('project_id', 'title', 'doc_type_id', 'doc_date', 'filename',
+             'object_key', 'size_bytes', 'created_at'),
+            (project_id, title, _opt_int(data, 'doc_type_id'), data.get('doc_date') or None,
+             info['filename'], info['object_key'], info['size_bytes'], now),
+        )
+        cur.execute(_DOC_SELECT + f'WHERE d.id = {db.PH}', (doc_id,))
+        row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/documents/<int:doc_id>', methods=['PATCH'])
+def update_document(doc_id):
+    data = request.get_json(force=True)
+    sets, params = [], []
+    if 'title' in data:
+        title = (data.get('title') or '').strip()
+        if not title:
+            return jsonify({'error': 'title cannot be empty'}), 400
+        sets.append(f'title = {db.PH}'); params.append(title)
+    if 'doc_type_id' in data:
+        sets.append(f'doc_type_id = {db.PH}'); params.append(_opt_int(data, 'doc_type_id'))
+    if 'doc_date' in data:
+        sets.append(f'doc_date = {db.PH}'); params.append(data.get('doc_date') or None)
+    if not sets:
+        return jsonify({'error': 'nothing to update'}), 400
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE project_documents SET {", ".join(sets)} WHERE id = {db.PH}',
+            params + [doc_id],
+        )
+        cur.execute(_DOC_SELECT + f'WHERE d.id = {db.PH}', (doc_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
+@app.route('/api/documents/<int:doc_id>', methods=['DELETE'])
+def delete_document(doc_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT object_key FROM project_documents WHERE id = {db.PH}', (doc_id,))
+        row = db.to_dict(cur.fetchone())
+        cur.execute(f'DELETE FROM project_documents WHERE id = {db.PH}', (doc_id,))
+    if row:
+        _delete_keys([row['object_key']])
+    return jsonify({'ok': True})
+
+
+@app.route('/api/documents/<int:doc_id>/download')
+def download_document(doc_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT filename, object_key FROM project_documents WHERE id = {db.PH}', (doc_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return _redirect_to_file(row['object_key'], row['filename'])
+
+
+# ── Model versions ──────────────────────────────────────────────────────────
+# Append-only: uploading makes a new version, highest number is current, and
+# every prior version stays downloadable.
+
+@app.route('/api/projects/<int:project_id>/model', methods=['GET'])
+def get_model_versions(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT id, version, label, filename, size_bytes, created_at '
+            f'FROM model_versions WHERE project_id = {db.PH} ORDER BY version DESC',
+            (project_id,),
+        )
+        return jsonify(db.to_dicts(cur.fetchall()))
+
+
+@app.route('/api/projects/<int:project_id>/model', methods=['POST'])
+def create_model_version(project_id):
+    if missing := _bucket_missing():
+        return missing
+
+    info, err = _store_upload(request.files.get('file'))
+    if err:
+        return err
+
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        # Version numbers are issued from a high-water mark, never recomputed
+        # from the live rows — deleting v3 must not hand "v3" to a later file.
+        cur.execute(
+            f'SELECT COALESCE(MAX(version), 0) AS v FROM model_versions '
+            f'WHERE project_id = {db.PH}', (project_id,),
+        )
+        highest_live = (db.to_dict(cur.fetchone()) or {}).get('v', 0) or 0
+        cur.execute(
+            f'SELECT COALESCE(model_version_seq, 0) AS s FROM projects WHERE id = {db.PH}',
+            (project_id,),
+        )
+        issued = (db.to_dict(cur.fetchone()) or {}).get('s', 0) or 0
+
+        version = max(highest_live, issued) + 1
+        cur.execute(
+            f'UPDATE projects SET model_version_seq = {db.PH} WHERE id = {db.PH}',
+            (version, project_id),
+        )
+        label = (request.form.get('label') or '').strip() or None
+        vid = db.insert_id(
+            cur, 'model_versions',
+            ('project_id', 'version', 'label', 'filename', 'object_key',
+             'size_bytes', 'created_at'),
+            (project_id, version, label, info['filename'], info['object_key'],
+             info['size_bytes'], now),
+        )
+    return jsonify({
+        'id': vid, 'version': version, 'label': label,
+        'filename': info['filename'], 'size_bytes': info['size_bytes'], 'created_at': now,
+    }), 201
+
+
+@app.route('/api/model-versions/<int:version_id>', methods=['DELETE'])
+def delete_model_version(version_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT object_key FROM model_versions WHERE id = {db.PH}', (version_id,))
+        row = db.to_dict(cur.fetchone())
+        cur.execute(f'DELETE FROM model_versions WHERE id = {db.PH}', (version_id,))
+    if row:
+        _delete_keys([row['object_key']])
+    return jsonify({'ok': True})
+
+
+@app.route('/api/model-versions/<int:version_id>/download')
+def download_model_version(version_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT filename, object_key FROM model_versions WHERE id = {db.PH}', (version_id,),
+        )
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    # Spreadsheets should save, not try to render in a tab.
+    return _redirect_to_file(row['object_key'], row['filename'], force_download=True)
+
+
+# ── Sub-pages ───────────────────────────────────────────────────────────────
+
+@app.route('/projects/<int:project_id>/<any(notes, documents, model):section>')
+def project_section(project_id, section):
+    project = _project_exists(project_id)
+    if not project:
+        return 'Project not found', 404
+    return render_template(
+        f'project_{section}.html', project=project,
+        section=section, max_mb=MAX_UPLOAD_MB, storage_enabled=storage.ENABLED,
+    )
 
 
 # ── AI drafting ──────────────────────────────────────────────────────────────

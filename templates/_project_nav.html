@@ -1,0 +1,14 @@
+{# Sub-navigation shared by every per-project page. Expects `project` and `section`. #}
+{% set tabs = [
+  ('overview',  'Overview',  '/projects/' ~ project.id),
+  ('notes',     'Notes',     '/projects/' ~ project.id ~ '/notes'),
+  ('documents', 'Documents', '/projects/' ~ project.id ~ '/documents'),
+  ('model',     'Model',     '/projects/' ~ project.id ~ '/model'),
+] %}
+<nav class="flex gap-4 mt-2.5">
+  {% for key, label, href in tabs %}
+    <a href="{{ href }}" class="text-sm transition-colors
+      {% if key == section %}font-semibold text-gray-900 border-b-2 border-blue-600 pb-0.5
+      {% else %}text-gray-400 hover:text-gray-600{% endif %}">{{ label }}</a>
+  {% endfor %}
+</nav>

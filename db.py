@@ -239,6 +239,76 @@ _CREATE_JOBS_INDEX = """
     ON generation_jobs (project_id, field)
 """
 
+_PK = 'SERIAL PRIMARY KEY' if IS_PG else 'INTEGER PRIMARY KEY AUTOINCREMENT'
+
+# ── Research material attached to a project ──────────────────────────────────
+# Notes are a dated log with files hanging off them; documents are a library
+# with a type and a date; model versions are an ordered chain. Separate tables
+# because the semantics differ — collapsing them into one "files" table would
+# mean a pile of columns that are null for two of the three uses.
+
+_CREATE_NOTES = f"""
+    CREATE TABLE IF NOT EXISTS project_notes (
+        id         {_PK},
+        project_id INTEGER NOT NULL,
+        body       TEXT    NOT NULL,
+        created_at TEXT    NOT NULL,
+        updated_at TEXT    NOT NULL
+    )
+"""
+
+_CREATE_NOTE_FILES = f"""
+    CREATE TABLE IF NOT EXISTS note_attachments (
+        id         {_PK},
+        note_id    INTEGER NOT NULL,
+        project_id INTEGER NOT NULL,
+        filename   TEXT    NOT NULL,
+        object_key TEXT    NOT NULL,
+        size_bytes INTEGER,
+        created_at TEXT    NOT NULL
+    )
+"""
+
+_CREATE_DOC_TYPES = f"""
+    CREATE TABLE IF NOT EXISTS doc_types (
+        id   {_PK},
+        name TEXT NOT NULL UNIQUE
+    )
+"""
+
+_CREATE_DOCUMENTS = f"""
+    CREATE TABLE IF NOT EXISTS project_documents (
+        id          {_PK},
+        project_id  INTEGER NOT NULL,
+        title       TEXT    NOT NULL,
+        doc_type_id INTEGER,
+        doc_date    TEXT,
+        filename    TEXT    NOT NULL,
+        object_key  TEXT    NOT NULL,
+        size_bytes  INTEGER,
+        created_at  TEXT    NOT NULL
+    )
+"""
+
+_CREATE_MODEL_VERSIONS = f"""
+    CREATE TABLE IF NOT EXISTS model_versions (
+        id         {_PK},
+        project_id INTEGER NOT NULL,
+        version    INTEGER NOT NULL,
+        label      TEXT,
+        filename   TEXT    NOT NULL,
+        object_key TEXT    NOT NULL,
+        size_bytes INTEGER,
+        created_at TEXT    NOT NULL
+    )
+"""
+
+# Seeded once, then yours to edit — same pattern as sources and idea types.
+DEFAULT_DOC_TYPES = [
+    'Presentation', 'Transcript', 'Filing', 'Report',
+    'Broker Research', 'Press Release', 'Other',
+]
+
 
 def get_setting(key, default=None):
     with get_conn() as conn:
@@ -263,6 +333,23 @@ def set_setting(key, value):
                 f'ON CONFLICT (key) DO UPDATE SET value = excluded.value',
                 (key, value),
             )
+
+
+def insert_id(cur, table, cols, values):
+    """INSERT a row and return its new id, on either backend.
+
+    Postgres needs RETURNING; SQLite exposes lastrowid. Callers shouldn't have
+    to care which they're on.
+    """
+    col_list = ', '.join(cols)
+    ph_list  = ', '.join([PH] * len(cols))
+    if IS_PG:
+        cur.execute(
+            f'INSERT INTO {table} ({col_list}) VALUES ({ph_list}) RETURNING id', values,
+        )
+        return to_dict(cur.fetchone())['id']
+    cur.execute(f'INSERT INTO {table} ({col_list}) VALUES ({ph_list})', values)
+    return cur.lastrowid
 
 
 def _pg_binary(data):
@@ -290,6 +377,17 @@ def init():
         cur.execute(_CREATE_SETTINGS)
         cur.execute(_CREATE_JOBS)
         cur.execute(_CREATE_JOBS_INDEX)
+        cur.execute(_CREATE_NOTES)
+        cur.execute(_CREATE_NOTE_FILES)
+        cur.execute(_CREATE_DOC_TYPES)
+        cur.execute(_CREATE_DOCUMENTS)
+        cur.execute(_CREATE_MODEL_VERSIONS)
+
+        # Seed document types on a first run only, so deletions stick.
+        cur.execute('SELECT COUNT(*) AS n FROM doc_types')
+        if (to_dict(cur.fetchone()) or {}).get('n', 0) == 0:
+            for name in DEFAULT_DOC_TYPES:
+                cur.execute(f'INSERT INTO doc_types (name) VALUES ({PH})', (name,))
 
 
 _MIGRATIONS = [
@@ -317,6 +415,9 @@ _PROJECT_MIGRATIONS = [
     ('business_description_detail', 'TEXT'),
     ('bull_case_detail',            'TEXT'),
     ('bear_case_detail',            'TEXT'),
+    # Highest model version ever issued, so deleting one can't recycle its
+    # number onto a different file.
+    ('model_version_seq', 'INTEGER'),
     ('business_description_generated_at', 'TEXT'),
     ('bull_case_generated_at',            'TEXT'),
     ('bear_case_generated_at',            'TEXT'),
