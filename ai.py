@@ -11,6 +11,7 @@ Every generation returns a summary (what the project page shows) and a detail
 than parsed out of prose.
 """
 import json
+import logging
 import os
 
 import db
@@ -224,24 +225,38 @@ def generate(field, project, context):
             'detail':  (data.get('detail')  or '').strip()}
 
 
+# Whether this account/SDK accepts the server-side fallback beta. Set False on
+# the first rejection so we stop paying a wasted 400 round-trip per generation.
+_fallbacks_supported = True
+
+
 def _send(client, request):
-    """Stream the request, preferring server-side fallbacks where the SDK supports them.
+    """Stream the request, preferring server-side fallbacks where they're accepted.
 
     Streaming avoids HTTP timeouts on the large max_tokens these write-ups need —
     on Opus 5 that budget covers thinking as well as the response. Fallbacks re-run
-    a safety-declined request on another model server-side; older SDK builds don't
-    accept the parameter, so we degrade to a plain call rather than failing.
+    a safety-declined request on another model server-side; not every account or
+    SDK build accepts the parameter, so we degrade to a plain call rather than fail.
     """
-    try:
-        with client.beta.messages.stream(
-            betas=['server-side-fallback-2026-07-01'],
-            fallbacks='default',
-            **request,
-        ) as stream:
-            return stream.get_final_message()
-    except Exception as exc:
-        if not _is_unsupported_param(exc):
-            raise
+    global _fallbacks_supported
+
+    if _fallbacks_supported:
+        try:
+            with client.beta.messages.stream(
+                betas=['server-side-fallback-2026-07-01'],
+                fallbacks='default',
+                **request,
+            ) as stream:
+                return stream.get_final_message()
+        except Exception as exc:
+            if not _is_unsupported_param(exc):
+                raise
+            _fallbacks_supported = False
+            logging.info(
+                'Server-side fallbacks rejected (%s) — using plain requests from now on.',
+                type(exc).__name__,
+            )
+
     with client.messages.stream(**request) as stream:
         return stream.get_final_message()
 
