@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import threading
 import time
 import traceback
 from flask import Flask, request, jsonify, render_template
@@ -926,6 +927,7 @@ def delete_project(project_id):
         # SQLite doesn't enforce foreign keys by default, so the ON DELETE
         # CASCADE can't be relied on — clear the children explicitly.
         cur.execute(f'DELETE FROM project_questions WHERE project_id = {db.PH}', (project_id,))
+        cur.execute(f'DELETE FROM generation_jobs WHERE project_id = {db.PH}', (project_id,))
         cur.execute(f'DELETE FROM projects WHERE id = {db.PH}', (project_id,))
     return jsonify({'ok': True})
 
@@ -1337,32 +1339,78 @@ def _ai_context(project):
     return '\n'.join(l for l in lines if l)
 
 
-@app.route('/api/projects/<int:project_id>/generate/<field>', methods=['POST'])
-def generate_writeup(project_id, field):
-    if field not in ai.FIELDS:
-        return jsonify({'error': f'unknown field: {field}'}), 400
+# Drafting runs in a background thread and reports through generation_jobs, so
+# no HTTP request stays open while Claude works. Nothing in the request path can
+# then be killed by a worker or proxy timeout, however long a draft takes.
 
+# A thread dies with its worker on redeploy, leaving a job stuck at 'running'.
+# Anything older than this is treated as interrupted rather than in progress.
+GENERATION_STALE_SECONDS = 15 * 60
+
+
+def _job_start(project_id, field):
     with db.get_conn() as conn:
         cur = db.cursor(conn)
-        cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
-        project = db.to_dict(cur.fetchone())
-    if not project:
-        return jsonify({'error': 'Project not found'}), 404
+        cur.execute(
+            f'DELETE FROM generation_jobs WHERE project_id = {db.PH} AND field = {db.PH}',
+            (project_id, field),
+        )
+        cur.execute(
+            f'INSERT INTO generation_jobs (project_id, field, status, started_at) '
+            f'VALUES ({db.PH}, {db.PH}, {db.PH}, {db.PH})',
+            (project_id, field, 'running', datetime.now().isoformat()),
+        )
 
+
+def _job_finish(project_id, field, status, error=None):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE generation_jobs SET status = {db.PH}, error = {db.PH}, '
+            f'finished_at = {db.PH} WHERE project_id = {db.PH} AND field = {db.PH}',
+            (status, error, datetime.now().isoformat(), project_id, field),
+        )
+
+
+def _job_read(project_id, field):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT status, error, started_at, finished_at FROM generation_jobs '
+            f'WHERE project_id = {db.PH} AND field = {db.PH}',
+            (project_id, field),
+        )
+        job = db.to_dict(cur.fetchone())
+    if not job:
+        return None
+
+    if job['status'] == 'running':
+        try:
+            age = (datetime.now() - datetime.fromisoformat(job['started_at'])).total_seconds()
+        except (TypeError, ValueError):
+            age = 0
+        if age > GENERATION_STALE_SECONDS:
+            msg = ('The draft was interrupted — most likely the server restarted while it '
+                   'was running. Nothing was saved; try again.')
+            _job_finish(project_id, field, 'error', msg)
+            return {'status': 'error', 'error': msg}
+    return job
+
+
+def _run_generation(project_id, field):
+    """Background worker. Owns its own DB connections; no request context."""
     try:
+        with db.get_conn() as conn:
+            cur = db.cursor(conn)
+            cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+            project = db.to_dict(cur.fetchone())
+        if not project:
+            _job_finish(project_id, field, 'error', 'Project no longer exists.')
+            return
+
         result = ai.generate(field, project, _ai_context(project))
-    except ai.NotConfigured as exc:
-        return jsonify({'error': str(exc)}), 503
-    except ai.Refused as exc:
-        return jsonify({'error': str(exc)}), 422
-    except Exception as exc:
-        return jsonify({'error': f'Generation failed: {exc}'}), 502
 
-    # Saving is separated from generating so a write failure reports itself as
-    # such — and hands back the draft rather than throwing away work already
-    # paid for.
-    now = datetime.now().isoformat()
-    try:
+        now = datetime.now().isoformat()
         with db.get_conn() as conn:
             cur = db.cursor(conn)
             cur.execute(
@@ -1370,15 +1418,64 @@ def generate_writeup(project_id, field):
                 f'{field}_generated_at = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
                 (result['summary'], result['detail'], now, now, project_id),
             )
-            cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
-            row = db.to_dict(cur.fetchone())
+        _job_finish(project_id, field, 'done')
+    except (ai.NotConfigured, ai.Refused) as exc:
+        _job_finish(project_id, field, 'error', str(exc))
     except Exception as exc:
-        app.logger.error('Saving %s failed\n%s', field, traceback.format_exc())
+        app.logger.error(
+            'Generation failed for project %s / %s\n%s',
+            project_id, field, traceback.format_exc(),
+        )
+        _job_finish(project_id, field, 'error', f'{type(exc).__name__}: {exc}')
+
+
+@app.route('/api/projects/<int:project_id>/generate/<field>', methods=['POST'])
+def generate_writeup(project_id, field):
+    if field not in ai.FIELDS:
+        return jsonify({'error': f'unknown field: {field}'}), 400
+    if not ai.api_key():
+        # Fail here rather than in the thread, so the user gets it immediately.
         return jsonify({
-            'error': f'The draft was written but saving it failed: {type(exc).__name__}: {exc}',
-            'unsaved': result,
-        }), 500
-    return jsonify(row)
+            'error': 'No Anthropic API key. Set the ANTHROPIC_API_KEY environment '
+                     'variable, or add a key on the Admin page.'
+        }), 503
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT id FROM projects WHERE id = {db.PH}', (project_id,))
+        if not cur.fetchone():
+            return jsonify({'error': 'Project not found'}), 404
+
+    running = _job_read(project_id, field)
+    if running and running['status'] == 'running':
+        return jsonify({'status': 'running'}), 202
+
+    _job_start(project_id, field)
+    threading.Thread(
+        target=_run_generation, args=(project_id, field), daemon=True,
+    ).start()
+    return jsonify({'status': 'running'}), 202
+
+
+@app.route('/api/projects/<int:project_id>/generation/<field>')
+def generation_status(project_id, field):
+    if field not in ai.FIELDS:
+        return jsonify({'error': f'unknown field: {field}'}), 400
+
+    job = _job_read(project_id, field)
+    if not job:
+        return jsonify({'status': 'idle'})
+
+    payload = {'status': job['status'], 'error': job.get('error')}
+    if job['status'] == 'done':
+        with db.get_conn() as conn:
+            cur = db.cursor(conn)
+            cur.execute(_PROJECT_SELECT + f'WHERE p.id = {db.PH}', (project_id,))
+            row = db.to_dict(cur.fetchone()) or {}
+        payload['summary']      = row.get(field)
+        payload['detail']       = row.get(f'{field}_detail')
+        payload['generated_at'] = row.get(f'{field}_generated_at')
+    return jsonify(payload)
 
 
 @app.route('/projects/<int:project_id>/detail/<field>')

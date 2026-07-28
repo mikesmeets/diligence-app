@@ -162,48 +162,76 @@ async function readFailure(res) {
   let payload = null;
   try { payload = JSON.parse(body); } catch (e) { /* not JSON — proxy error page */ }
 
-  if (payload && payload.error) return { message: payload.error, unsaved: payload.unsaved };
-  if (res.status === 502 || res.status === 504) {
-    return { message: 'The draft ran longer than the server allows and the request was cut off. '
-                    + 'Try again, or switch to Sonnet on the Admin page — it is quicker.' };
-  }
+  if (payload && payload.error) return { message: payload.error };
   return { message: `Server error ${res.status}.` };
 }
 
-async function generate() {
+// Drafting runs server-side in the background; this just starts it and polls.
+// Nothing holds a connection open, so the draft survives you closing the tab.
+const POLL_MS      = 3000;
+const POLL_GIVE_UP = 20 * 60 * 1000;
+
+function setDrafting(on) {
   const btn = document.getElementById('gen-btn');
+  btn.disabled = on;
+  if (on) {
+    btn.innerHTML = '<span class="spin">✦</span> Drafting…';
+    document.getElementById('generated-at').textContent =
+      'Drafting — this can take a few minutes. Safe to leave this page.';
+  } else {
+    btn.textContent = detail ? '✦ Regenerate' : '✦ Generate';
+  }
+}
+
+async function generate() {
   if (detail && !confirm(`Replace the current ${LABEL.toLowerCase()} with a fresh draft?`)) return;
 
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spin">✦</span> Drafting…';
+  setDrafting(true);
   try {
     const res = await fetch(`/api/projects/${PROJECT_ID}/generate/${FIELD}`, { method: 'POST' });
     if (!res.ok) {
-      const fail = await readFailure(res);
-      // The draft survived but the save didn't — show it so the work isn't lost.
-      if (fail.unsaved) {
-        summary = fail.unsaved.summary || '';
-        detail  = fail.unsaved.detail  || '';
-        render();
-        document.getElementById('generated-at').textContent = 'NOT SAVED — copy this before you leave';
-        alert(`${fail.message}\n\nThe draft is shown on the page but has not been saved.`);
-      } else {
-        alert(fail.message);
-      }
+      setDrafting(false);
+      render();
+      alert((await readFailure(res)).message);
       return;
     }
-    const data = await res.json();
-    summary   = data[FIELD] || '';
-    detail    = data[`${FIELD}_detail`] || '';
-    generated = data[`${FIELD}_generated_at`] || '';
-    render();
+    pollGeneration();
   } catch (e) {
+    setDrafting(false);
+    render();
     alert(`Could not reach the server: ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = original;
   }
+}
+
+async function pollGeneration() {
+  const started = Date.now();
+  while (Date.now() - started < POLL_GIVE_UP) {
+    await new Promise(r => setTimeout(r, POLL_MS));
+
+    let s;
+    try {
+      const res = await fetch(`/api/projects/${PROJECT_ID}/generation/${FIELD}`);
+      if (!res.ok) continue;          // transient — keep waiting
+      s = await res.json();
+    } catch (e) {
+      continue;                        // dropped connection — keep waiting
+    }
+
+    if (s.status === 'running') continue;
+
+    if (s.status === 'done') {
+      summary   = s.summary   || '';
+      detail    = s.detail    || '';
+      generated = s.generated_at || '';
+    }
+    setDrafting(false);
+    render();
+    if (s.status === 'error') alert(s.error || 'Generation failed.');
+    return;
+  }
+  setDrafting(false);
+  render();
+  alert('Still drafting after 20 minutes. It may yet finish — reload the page to check.');
 }
 
 function startEdit() {
@@ -237,6 +265,17 @@ async function saveEdit() {
 }
 
 render();
+
+// A draft may already be running from a previous visit — pick it back up.
+(async () => {
+  try {
+    const res = await fetch(`/api/projects/${PROJECT_ID}/generation/${FIELD}`);
+    if (res.ok && (await res.json()).status === 'running') {
+      setDrafting(true);
+      pollGeneration();
+    }
+  } catch (e) { /* offline — nothing to resume */ }
+})();
 </script>
 </body>
 </html>

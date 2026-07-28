@@ -385,43 +385,83 @@ async function generationError(res) {
   let payload = null;
   try { payload = JSON.parse(body); } catch (e) { /* not JSON — proxy error page */ }
 
-  if (payload && payload.error) {
-    // The draft survived but the save didn't — the detail page can show it.
-    return payload.unsaved
-      ? `${payload.error}\n\nOpen the full write-up page and regenerate there to recover the draft.`
-      : payload.error;
-  }
-  if (res.status === 502 || res.status === 504) {
-    return 'The draft ran longer than the server allows and the request was cut off. '
-         + 'Try again, or switch to Sonnet on the Admin page — it is quicker.';
-  }
+  if (payload && payload.error) return payload.error;
   return `Server error ${res.status}.`;
 }
 
-async function generateNote(field) {
+// Drafting runs server-side in the background; the request just starts it and
+// we poll for the result. Nothing here holds a connection open, so a draft can
+// take as long as it needs — and you can leave the page and come back to it.
+const AI_FIELDS = ['business_description', 'bull_case', 'bear_case'];
+const POLL_MS      = 3000;
+const POLL_GIVE_UP = 20 * 60 * 1000;
+
+function setDrafting(field, on) {
   const btn = document.getElementById(`gen-${field}`);
+  if (!btn) return;
+  btn.textContent = on ? '✦ Drafting…' : '✦ Draft';
+  btn.disabled = on;
+}
+
+async function generateNote(field) {
   if ((NOTES[field] || '').trim() &&
       !confirm('Replace what is there with a fresh draft from Claude?')) return;
 
-  const original = btn.textContent;
-  btn.textContent = '✦ Drafting…';
-  btn.disabled = true;
+  setDrafting(field, true);
   try {
     const res = await fetch(`/api/projects/${PROJECT_ID}/generate/${field}`, { method: 'POST' });
-    if (!res.ok) { alert(await generationError(res)); return; }
-    const data = await res.json();
-    NOTES[field] = data[field] || '';
-    renderNote(field);
-    // The full write-up now exists, so reveal the link through to it.
-    const more = document.getElementById(`more-${field}`);
-    if (more && data[`${field}_detail`]) more.classList.remove('hidden');
+    if (!res.ok) { alert(await generationError(res)); setDrafting(field, false); return; }
+    pollGeneration(field);
   } catch (e) {
     alert(`Could not reach the server: ${e.message}`);
-  } finally {
-    btn.textContent = original;
-    btn.disabled = false;
+    setDrafting(field, false);
   }
 }
+
+async function pollGeneration(field) {
+  const started = Date.now();
+  while (Date.now() - started < POLL_GIVE_UP) {
+    await new Promise(r => setTimeout(r, POLL_MS));
+
+    let s;
+    try {
+      const res = await fetch(`/api/projects/${PROJECT_ID}/generation/${field}`);
+      if (!res.ok) continue;          // transient — keep waiting
+      s = await res.json();
+    } catch (e) {
+      continue;                        // dropped connection — keep waiting
+    }
+
+    if (s.status === 'running') continue;
+
+    setDrafting(field, false);
+    if (s.status === 'done') {
+      NOTES[field] = s.summary || '';
+      renderNote(field);
+      const more = document.getElementById(`more-${field}`);
+      if (more && s.detail) more.classList.remove('hidden');
+    } else if (s.status === 'error') {
+      alert(s.error || 'Generation failed.');
+    }
+    return;
+  }
+  setDrafting(field, false);
+  alert('Still drafting after 20 minutes. It may yet finish — reload the page to check.');
+}
+
+// A draft started earlier may still be running (you navigated away, or reloaded).
+// Pick it back up rather than showing a stale idle button.
+AI_FIELDS.forEach(async (field) => {
+  if (!document.getElementById(`gen-${field}`)) return;
+  try {
+    const res = await fetch(`/api/projects/${PROJECT_ID}/generation/${field}`);
+    if (!res.ok) return;
+    if ((await res.json()).status === 'running') {
+      setDrafting(field, true);
+      pollGeneration(field);
+    }
+  } catch (e) { /* offline — nothing to resume */ }
+});
 
 Object.keys(NOTES).forEach(f => {
   renderNote(f);

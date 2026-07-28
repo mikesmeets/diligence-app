@@ -220,6 +220,25 @@ _CREATE_SETTINGS = """
     )
 """
 
+# One row per (project, field) tracking an in-flight or finished draft, so the
+# HTTP request doesn't have to stay open while Claude works.
+_CREATE_JOBS = """
+    CREATE TABLE IF NOT EXISTS generation_jobs (
+        id          %s,
+        project_id  INTEGER NOT NULL,
+        field       TEXT    NOT NULL,
+        status      TEXT    NOT NULL,
+        error       TEXT,
+        started_at  TEXT    NOT NULL,
+        finished_at TEXT
+    )
+""" % ('SERIAL PRIMARY KEY' if IS_PG else 'INTEGER PRIMARY KEY AUTOINCREMENT')
+
+_CREATE_JOBS_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS generation_jobs_project_field
+    ON generation_jobs (project_id, field)
+"""
+
 
 def get_setting(key, default=None):
     with get_conn() as conn:
@@ -269,6 +288,8 @@ def init():
         cur.execute(_CREATE_PROJECTS)
         cur.execute(_CREATE_QUESTIONS)
         cur.execute(_CREATE_SETTINGS)
+        cur.execute(_CREATE_JOBS)
+        cur.execute(_CREATE_JOBS_INDEX)
 
 
 _MIGRATIONS = [
