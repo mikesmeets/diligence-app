@@ -1905,15 +1905,18 @@ def _add_model_version(project, raw, filename, label, retagged_from=None):
     # files untouched.
     stamped = xlsxmeta.stamp_for_project(raw, project_id, project['name'], version)
 
+    # v3 2026-07-28 1432 AAP_model.xlsx — the version leads, then the upload
+    # time. The original filename can change between revisions and there may be
+    # several uploads in a day, so neither alone identifies a version.
+    uploaded = datetime.now()
     info, err = _store_bytes(
         stamped, filename, parts=_project_folder(project) + ['model'],
-        # v3 AAP_model.xlsx — sorts and reads correctly in a bucket listing.
-        rename=f'v{version} {filename}',
+        rename=f'v{version} {uploaded.strftime("%Y-%m-%d %H%M")} {filename}',
     )
     if err:
         return err
 
-    now = datetime.now().isoformat()
+    now = uploaded.isoformat()
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         vid = db.insert_id(

@@ -6,9 +6,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}{{ project.name }}{% endblock %} — Diligence App</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/markdown.js"></script>
   <style>
     .spin { animation: spin 1s linear infinite; display:inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .md p { margin:.4rem 0; line-height:1.65; }
+    .md p:first-child { margin-top:0; }
+    .md p:last-child { margin-bottom:0; }
+    .md h1,.md h2,.md h3 { font-weight:700; color:#111827; margin:.75rem 0 .35rem; }
+    .md h1 { font-size:1.05rem; } .md h2 { font-size:1rem; } .md h3 { font-size:.9rem; }
+    .md ul,.md ol { margin:.4rem 0 .4rem 1.35rem; }
+    .md ul { list-style:disc; } .md ol { list-style:decimal; }
+    .md li { margin:.15rem 0; line-height:1.6; }
+    .md code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.875em;
+               background:#f3f4f6; padding:.1rem .3rem; border-radius:.25rem; }
+    .md strong { font-weight:600; color:#111827; }
+    .md blockquote { border-left:3px solid #e5e7eb; padding-left:.75rem; color:#4b5563; margin:.4rem 0; }
+    .md hr { margin:.75rem 0; border-color:#e5e7eb; }
+    .md-table { overflow-x:auto; margin:.6rem 0; }
+    .md table { border-collapse:collapse; width:100%; font-size:.8125rem; }
+    .md th { text-align:left; font-weight:600; color:#374151; background:#f9fafb;
+             border-bottom:2px solid #e5e7eb; padding:.35rem .6rem; white-space:nowrap; }
+    .md td { border-bottom:1px solid #f3f4f6; padding:.3rem .6rem; font-variant-numeric:tabular-nums; }
     {% block styles %}{% endblock %}
   </style>
 </head>

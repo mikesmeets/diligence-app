@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ label }} — {{ project.name }}</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/markdown.js"></script>
   <style>
     .spin { animation: spin 1s linear infinite; display:inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -101,91 +102,7 @@ function escHtml(s) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Small Markdown subset — headings, lists, quotes, rules, bold/italic/code.
-// Everything is escaped first, so model output can't inject markup.
-function renderMd(src) {
-  const inline = (t) => escHtml(t)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-
-  // Figures get right-aligned even when the model omits alignment markers,
-  // which it usually does — a column of left-ragged numbers is unreadable.
-  const NUMERIC = /^[-+(]?\s*[$€£]?\s*\d[\d,]*(\.\d+)?\s*(%|x|bps|bn|mm|tn|k)?\s*\)?$/i;
-  const cells = (row) =>
-    row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
-  const isRow = (l) => /^\s*\|.*\|\s*$/.test(l || '');
-  const isSep = (l) => /^\s*\|[\s:|-]*-[\s:|-]*\|\s*$/.test(l || '');
-
-  const lines = String(src ?? '').split('\n');
-  const out = [];
-  let list = null, para = [];
-
-  const flushPara = () => {
-    if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; }
-  };
-  const flushList = () => {
-    if (list) { out.push(`</${list}>`); list = null; }
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
-
-    // GFM table: a header row followed by a |---|---| separator.
-    if (isRow(line) && isSep(lines[i + 1])) {
-      flushPara(); flushList();
-      const head  = cells(line);
-      const align = cells(lines[i + 1]).map(s =>
-        /^:-+:$/.test(s) ? 'center' : /^-+:$/.test(s) ? 'right'
-        : /^:-+$/.test(s) ? 'left'  : null);
-      i += 1;
-
-      const body = [];
-      while (isRow(lines[i + 1])) body.push(cells(lines[++i]));
-
-      // Resolve one alignment per column so the header sits over its own
-      // figures. Explicit markers win; otherwise a column of numbers goes right.
-      const colAlign = head.map((_, n) => {
-        if (align[n]) return align[n];
-        const vals = body.map(r => r[n]).filter(v => v !== undefined && v !== '');
-        return vals.length && vals.every(v => NUMERIC.test(v)) ? 'right' : null;
-      });
-      const style = (n) => colAlign[n] ? ` style="text-align:${colAlign[n]}"` : '';
-
-      const th = head.map((h, n) => `<th${style(n)}>${inline(h)}</th>`).join('');
-      const tr = body.map(r =>
-        '<tr>' + r.map((c, n) => `<td${style(n)}>${inline(c)}</td>`).join('') + '</tr>'
-      ).join('');
-
-      out.push(`<div class="md-table"><table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`);
-      continue;
-    }
-
-    if (!line.trim())                    { flushPara(); flushList(); continue; }
-    if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flushPara(); flushList(); out.push('<hr>'); continue; }
-
-    const h = line.match(/^(#{1,3})\s+(.*)$/);
-    if (h) { flushPara(); flushList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
-
-    const q = line.match(/^>\s?(.*)$/);
-    if (q) { flushPara(); flushList(); out.push(`<blockquote>${inline(q[1])}</blockquote>`); continue; }
-
-    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (ul || ol) {
-      flushPara();
-      const want = ul ? 'ul' : 'ol';
-      if (list !== want) { flushList(); out.push(`<${want}>`); list = want; }
-      out.push(`<li>${inline((ul || ol)[1])}</li>`);
-      continue;
-    }
-
-    flushList();
-    para.push(line.trim());
-  }
-  flushPara(); flushList();
-  return out.join('\n');
-}
+// Markdown rendering lives in /static/markdown.js, shared with the notes page.
 
 function render() {
   document.getElementById('summary').innerHTML = summary
@@ -193,7 +110,7 @@ function render() {
     : '<span class="text-gray-400">Nothing yet — hit Regenerate, or write it yourself.</span>';
 
   document.getElementById('view').innerHTML = detail
-    ? renderMd(detail)
+    ? renderMarkdown(detail)
     : `<p class="text-gray-400 text-sm">No write-up yet. Generate one with Claude, or click Edit to write it yourself.</p>`;
 
   document.getElementById('generated-at').textContent =

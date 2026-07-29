@@ -7,7 +7,7 @@ you nothing if you ever download the bucket on its own. This rewrites them to:
     ideas/2026-03-14 AAP/teardown.pdf
     projects/Advance Auto Parts/notes/IR call notes.pdf
     projects/Advance Auto Parts/documents/AAP_investor_day.pdf
-    projects/Advance Auto Parts/model/v3 AAP_model.xlsx
+    projects/Advance Auto Parts/model/v3 2026-07-28 1432 AAP_model.xlsx
 
 Safe to re-run: objects already at their target key are skipped. Re-running is
 also how you re-sync paths after renaming a project, since renames don't move
@@ -19,6 +19,7 @@ Run against production with:
 Add --dry-run to print the moves without touching anything.
 """
 import sys
+from datetime import datetime
 
 import db
 import storage
@@ -78,12 +79,18 @@ def plan():
                      ['projects', r['name'], 'documents'], r['filename']))
 
     for r in _rows(
-        'SELECT m.id, m.version, m.filename, m.object_key, p.name FROM model_versions m '
-        'JOIN projects p ON m.project_id = p.id'
+        'SELECT m.id, m.version, m.filename, m.object_key, m.created_at, p.name '
+        'FROM model_versions m JOIN projects p ON m.project_id = p.id'
     ):
+        # Same shape as a fresh upload: version, then the moment it arrived.
+        stamp = ''
+        try:
+            stamp = datetime.fromisoformat(r['created_at']).strftime('%Y-%m-%d %H%M') + ' '
+        except (TypeError, ValueError):
+            pass
         jobs.append(('model_versions', r['id'], 'object_key', r['object_key'],
                      ['projects', r['name'], 'model'],
-                     f"v{r['version']} {r['filename']}"))
+                     f"v{r['version']} {stamp}{r['filename']}"))
 
     return jobs
 
