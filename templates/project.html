@@ -941,8 +941,11 @@ function drawTearsheet(d) {
            ${fromFmp
              ? 'Forward multiples hold the current price and EV against each estimate year. '
                + 'FCF yield stays trailing — consensus free cash flow is not published.'
-             : 'Yahoo publishes forward EPS and revenue only, so the EBITDA, EBIT and margin '
-               + 'rows are blank. Add an FMP key on the Admin page to fill them in.'}
+             : (cons.fmp_error
+                 ? `FMP could not supply estimates, so this is Yahoo — which publishes forward `
+                   + `EPS and revenue only. ${escHtml(cons.fmp_error)}`
+                 : 'Yahoo publishes forward EPS and revenue only, so the EBITDA, EBIT and margin '
+                   + 'rows are blank. Add an FMP key on the Admin page to fill them in.')}
          </p>`}
   `;
 

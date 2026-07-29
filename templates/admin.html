@@ -258,9 +258,17 @@ async function testFmp() {
     const res  = await fetch('/api/fmp/test', { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
-      const s = data.sample;
-      out.textContent = `✓ Connected — ${s.name || s.symbol} ${s.price != null ? `at ${s.price} ${s.currency || ''}` : ''}`.trim();
-      out.className = 'text-xs mt-2 text-green-600';
+      const p = data.sample.profile || {};
+      const e = data.sample.estimates || {};
+      const line1 = `✓ Key works — ${p.name || p.symbol}${p.price != null ? ` at ${p.price} ${p.currency || ''}` : ''}`.trim();
+      // The tearsheet needs analyst estimates specifically, and those sit behind
+      // a paid FMP tier — so report that separately from the key being valid.
+      const line2 = e.ok
+        ? `✓ Analyst estimates available — ${e.detail}`
+        : `✗ Analyst estimates unavailable — ${e.detail || 'unknown reason'}. `
+          + `The Consensus block will keep using Yahoo.`;
+      out.innerHTML = `${line1}<br>${line2}`;
+      out.className = `text-xs mt-2 ${e.ok ? 'text-green-600' : 'text-amber-600'}`;
     } else {
       out.textContent = data.error || `Failed (${res.status})`;
       out.className = 'text-xs mt-2 text-red-600';

@@ -1243,10 +1243,13 @@ def _consensus_from_fmp(ticker, price, mcap, ev, trailing):
     try:
         rows = fmp.analyst_estimates(ticker, limit=5)
     except Exception as exc:
+        # Don't fail silently: a key that's set but rejected, or an endpoint the
+        # plan doesn't cover, looks identical to having no key at all otherwise.
         app.logger.info('FMP estimates unavailable for %s: %s', ticker, exc)
-        return None
+        return {'source': 'Yahoo', 'periods': None, 'fmp_error': str(exc)}
     if not rows:
-        return None
+        return {'source': 'Yahoo', 'periods': None,
+                'fmp_error': f'FMP returned no analyst estimates for {ticker}.'}
 
     def growth(now, before):
         if now is None or not before:
@@ -1325,6 +1328,20 @@ def _consensus(t, price, mcap):
     return {'source': 'Yahoo', 'periods': rows} if rows else {'source': 'Yahoo', 'periods': []}
 
 
+def _pick_consensus(t, ticker, price, mcap, ev, trailing):
+    """FMP when it can answer, Yahoo otherwise — carrying why, if FMP couldn't."""
+    attempt = _consensus_from_fmp(ticker, price, mcap, ev, trailing)
+    if attempt and attempt.get('periods'):
+        return attempt
+
+    fallback = _consensus(t, price, mcap)
+    if attempt and attempt.get('fmp_error'):
+        fallback['fmp_error'] = attempt['fmp_error']
+    elif not fmp.enabled():
+        fallback['fmp_error'] = None    # no key — the UI already says to add one
+    return fallback
+
+
 def _build_tearsheet(ticker):
     t    = yf.Ticker(ticker)
     info = t.info or {}
@@ -1396,13 +1413,10 @@ def _build_tearsheet(ticker):
             'revenue':  (lambda v: v * 100 if v is not None else None)(_num(info.get('revenueGrowth'))),
             'earnings': (lambda v: v * 100 if v is not None else None)(_num(info.get('earningsGrowth'))),
         },
-        'consensus': (
-            _consensus_from_fmp(ticker, price, mcap, ev, {
-                'revenue': revenue, 'ebitda': ebitda,
-                'ebit': _num(info.get('ebit')), 'eps': _num(info.get('trailingEps')),
-            })
-            or _consensus(t, price, mcap)
-        ),
+        'consensus': _pick_consensus(t, ticker, price, mcap, ev, {
+            'revenue': revenue, 'ebitda': ebitda,
+            'ebit': _num(info.get('ebit')), 'eps': _num(info.get('trailingEps')),
+        }),
         'analyst': {
             'target':         _num(info.get('targetMeanPrice')),
             'recommendation': info.get('recommendationKey'),
@@ -2452,6 +2466,10 @@ def save_settings():
             db.set_setting('fmp_api_key', '')
         elif key:
             db.set_setting('fmp_api_key', key)
+        # Tearsheets are cached for 15 minutes and carry the consensus block,
+        # so without this a new key appears to do nothing until it expires.
+        for cached in [k for k in _cache if k.startswith('tear:')]:
+            _cache.pop(cached, None)
 
     if data.get('model') in dict(ai.MODELS):
         db.set_setting('ai_model', data['model'])

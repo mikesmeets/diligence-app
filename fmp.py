@@ -66,8 +66,15 @@ def get(path, legacy=False, **params):
     except requests.RequestException as exc:
         raise FMPError(f'Could not reach FMP: {exc}') from exc
 
-    if resp.status_code in (401, 403):
-        raise FMPError('FMP rejected the API key (401/403). Check it on the Admin page.')
+    if resp.status_code == 401:
+        raise FMPError('FMP rejected the API key (401). Check it on the Admin page.')
+    if resp.status_code == 403:
+        # 403 on a working key almost always means the endpoint isn't in the plan,
+        # not that the key is wrong — saying "bad key" sends you down the wrong path.
+        raise FMPError(
+            f'FMP refused this endpoint (403). The key is likely fine but "{path}" '
+            f'is not included in your plan.'
+        )
     if resp.status_code == 429:
         raise FMPError('FMP rate limit reached — wait a moment and try again.')
     if resp.status_code >= 400:
@@ -143,15 +150,44 @@ def analyst_estimates(symbol, limit=4):
 
 
 def test():
-    """Validate the key with the cheapest call available."""
+    """Check the key, and separately whether the plan covers analyst estimates.
+
+    They fail independently: analyst estimates sit behind a paid tier on FMP, so
+    a perfectly valid key can authenticate and still not answer the one call the
+    tearsheet needs.
+    """
     data = get('profile', symbol='AAPL')
     row = data[0] if isinstance(data, list) and data else data
     if not isinstance(row, dict) or not (row.get('symbol') or row.get('companyName')):
         raise FMPError('The key worked but the response was not what was expected.')
-    return {
+
+    profile = {
         'symbol': row.get('symbol'),
         'name': row.get('companyName'),
         'price': row.get('price'),
         'currency': row.get('currency'),
         'exchange': row.get('exchange') or row.get('exchangeShortName'),
+    }
+
+    try:
+        rows = analyst_estimates('AAPL', limit=2)
+    except FMPError as exc:
+        return {'profile': profile, 'estimates': {'ok': False, 'detail': str(exc)}}
+
+    if not rows:
+        return {'profile': profile,
+                'estimates': {'ok': False, 'detail': 'The endpoint answered but returned no rows.'}}
+
+    got = [k for k in ('revenue', 'ebitda', 'ebit', 'eps') if rows[-1].get(k) is not None]
+    missing = [k for k in ('revenue', 'ebitda', 'ebit', 'eps') if rows[-1].get(k) is None]
+    return {
+        'profile': profile,
+        'estimates': {
+            'ok': bool(got),
+            'years': len(rows),
+            'fields': got,
+            'missing': missing,
+            'detail': (f'{len(rows)} year(s); carries {", ".join(got)}'
+                       + (f'; missing {", ".join(missing)}' if missing else '')),
+        },
     }
