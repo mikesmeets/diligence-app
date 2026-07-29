@@ -879,7 +879,15 @@ function drawTearsheet(d) {
   // Tolerate the older bare-list payload as well as {source, periods}, so a
   // page held over from a previous deploy still renders instead of blanking.
   const periods = Array.isArray(cons) ? cons : (cons.periods || []);
-  const fromFmp = !Array.isArray(cons) && cons.source === 'FMP';
+  const source  = Array.isArray(cons) ? 'Yahoo' : (cons.source || 'Yahoo');
+  const fromFmp = source === 'FMP';
+  const fromAv  = source === 'Alpha Vantage';
+
+  // Why the richer sources didn't answer, if they didn't. `fmp_error` is the
+  // single-source shape this replaced.
+  const notes = (!Array.isArray(cons) && cons.notes && cons.notes.length)
+    ? cons.notes
+    : (!Array.isArray(cons) && cons.fmp_error ? [cons.fmp_error] : []);
 
   const consCols = periods.map(x => `<th class="text-right font-semibold pb-1 px-1">${escHtml(x.label)}</th>`).join('');
   const consRow  = (label, fn, opts = {}) => `
@@ -913,7 +921,7 @@ function drawTearsheet(d) {
     ${row('Earnings growth',  signedPct(g.earnings))}
 
     <div class="ts-head mt-5">Consensus
-      <span class="font-normal text-[10px] uppercase tracking-wide">${fromFmp ? 'FMP' : 'Yahoo'}</span>
+      <span class="font-normal text-[10px] uppercase tracking-wide">${escHtml(source)}</span>
     </div>
     ${periods.length === 0
       ? '<p class="text-xs text-gray-400 py-2">No estimates available.</p>'
@@ -924,37 +932,59 @@ function drawTearsheet(d) {
            <tbody>
              ${consHead('Valuation')}
              ${consRow('P/E',         x => fmtX(x.pe), { sub: true })}
-             ${consRow('EV/EBITDA',   x => fmtX(x.ev_ebitda), { sub: true })}
-             ${consRow('EV/EBIT',     x => fmtX(x.ev_ebit), { sub: true })}
+             ${fromFmp ? consRow('EV/EBITDA', x => fmtX(x.ev_ebitda), { sub: true }) : ''}
+             ${fromFmp ? consRow('EV/EBIT',   x => fmtX(x.ev_ebit), { sub: true }) : ''}
              ${consRow('Price/Sales', x => fmtX(x.price_sales), { sub: true })}
 
              ${consHead('Growth')}
              ${consRow('Revenue', x => signedPct(x.revenue_growth), { sub: true })}
-             ${consRow('EBITDA',  x => signedPct(x.ebitda_growth), { sub: true })}
-             ${consRow('EBIT',    x => signedPct(x.ebit_growth), { sub: true })}
+             ${fromFmp ? consRow('EBITDA', x => signedPct(x.ebitda_growth), { sub: true }) : ''}
+             ${fromFmp ? consRow('EBIT',   x => signedPct(x.ebit_growth), { sub: true }) : ''}
              ${consRow('EPS',     x => signedPct(x.eps_growth), { sub: true })}
 
-             ${consHead('Margins')}
-             ${consRow('EBITDA', x => fmtPct(x.ebitda_margin), { sub: true })}
-             ${consRow('EBIT',   x => fmtPct(x.ebit_margin), { sub: true })}
+             ${fromFmp ? `
+               ${consHead('Margins')}
+               ${consRow('EBITDA', x => fmtPct(x.ebitda_margin), { sub: true })}
+               ${consRow('EBIT',   x => fmtPct(x.ebit_margin), { sub: true })}` : ''}
 
              ${consHead('Estimates')}
              ${consRow('Revenue', x => fmtBig(x.revenue), { sub: true })}
-             ${consRow('EBITDA',  x => fmtBig(x.ebitda), { sub: true })}
-             ${consRow('EBIT',    x => fmtBig(x.ebit), { sub: true })}
+             ${fromFmp ? consRow('EBITDA', x => fmtBig(x.ebitda), { sub: true }) : ''}
+             ${fromFmp ? consRow('EBIT',   x => fmtBig(x.ebit), { sub: true }) : ''}
              ${consRow('EPS',     x => x.eps == null ? null : `$${x.eps.toFixed(2)}`, { sub: true })}
              ${consRow('Analysts',x => x.analysts == null ? null : String(Math.round(x.analysts)), { sub: true })}
+
+             ${fromAv ? `
+               ${consHead('Dispersion')}
+               ${consRow('EPS range', x => (x.eps_low == null || x.eps_high == null)
+                   ? null : `$${x.eps_low.toFixed(2)}–$${x.eps_high.toFixed(2)}`, { sub: true })}
+               ${consRow('Revenue range', x => (x.revenue_low == null || x.revenue_high == null)
+                   ? null : `${fmtBig(x.revenue_low)}–${fmtBig(x.revenue_high)}`, { sub: true })}
+
+               ${consHead('EPS revisions')}
+               ${consRow('vs 30d ago', x => signedPct(x.eps_drift_30d), { sub: true })}
+               ${consRow('vs 90d ago', x => signedPct(x.eps_drift_90d), { sub: true })}
+               ${consRow('Up / down (30d)', x => (!x.revisions_up && !x.revisions_down)
+                   ? null
+                   : `<span class="text-green-600">${Math.round(x.revisions_up || 0)}</span>`
+                     + ` / <span class="text-red-500">${Math.round(x.revisions_down || 0)}</span>`,
+                   { sub: true })}` : ''}
            </tbody>
          </table>
          <p class="text-[11px] text-gray-300 mt-2 leading-snug">
            ${fromFmp
              ? 'Forward multiples hold the current price and EV against each estimate year. '
                + 'FCF yield stays trailing — consensus free cash flow is not published.'
-             : (cons.fmp_error
-                 ? `FMP could not supply estimates, so this is Yahoo — which publishes forward `
-                   + `EPS and revenue only. ${escHtml(cons.fmp_error)}`
-                 : 'Yahoo publishes forward EPS and revenue only, so the EBITDA, EBIT and margin '
-                   + 'rows are blank. Add an FMP key on the Admin page to fill them in.')}
+             : fromAv
+               ? 'Alpha Vantage publishes forward EPS and revenue but no EBITDA or EBIT, so the '
+                 + 'forward EV multiples and margins are omitted rather than guessed. Revisions '
+                 + 'compare today&rsquo;s mean estimate with where it sat 30 and 90 days ago.'
+                 + (notes.length ? `<br>${escHtml(notes.join(' '))}` : '')
+               : (notes.length
+                   ? `This is Yahoo, which publishes forward EPS and revenue only. `
+                     + escHtml(notes.join(' '))
+                   : 'Yahoo publishes forward EPS and revenue only. Add an FMP or Alpha Vantage '
+                     + 'key on the Admin page for a fuller forward view.')}
          </p>`}
   `;
 

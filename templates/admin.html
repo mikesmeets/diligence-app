@@ -107,6 +107,40 @@
     </p>
   </div>
 
+  <!-- Alpha Vantage API key -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+      Alpha Vantage API Key
+    </p>
+
+    <div id="av-status" class="text-sm mb-3"></div>
+
+    <div id="av-input-row">
+      <input id="f-av" type="password" autocomplete="off" placeholder="Your Alpha Vantage API key"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-blue-500" />
+      <div class="flex gap-2 mt-2 flex-wrap">
+        <button onclick="saveAvKey()"
+          class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save key</button>
+        <input id="av-test-symbol" placeholder="IBM" autocomplete="off" spellcheck="false"
+          class="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-xs font-mono uppercase outline-none focus:ring-2 focus:ring-blue-500" />
+        <button id="av-test" onclick="testAv()"
+          class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Test connection</button>
+        <button onclick="clearAvKey()" id="av-clear-btn"
+          class="hidden px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors">Remove stored key</button>
+      </div>
+      <p id="av-test-result" class="text-xs mt-2"></p>
+      <p id="av-usage" class="text-xs text-gray-400 mt-1"></p>
+    </div>
+
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      Used when FMP can't answer. Carries forward EPS and revenue with high/low dispersion
+      and 30/90-day revision trends — but no forward EBITDA or EBIT, so those rows stay blank.
+      <span class="text-amber-600">The free tier allows 25 requests per day</span>, so responses
+      are cached for six hours. <code class="font-mono text-gray-500">ALPHAVANTAGE_API_KEY</code>
+      as an environment variable takes precedence, same as the others.
+    </p>
+  </div>
+
   <!-- Model template -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
@@ -288,12 +322,102 @@ async function testFmp() {
   }
 }
 
+function renderAvStatus(source) {
+  const el  = document.getElementById('av-status');
+  const btn = document.getElementById('av-clear-btn');
+  const row = document.getElementById('av-input-row');
+
+  if (source === 'env') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ Using the ALPHAVANTAGE_API_KEY environment variable.</span>
+      <span class="text-gray-400">This takes precedence — a key saved here would be ignored.</span>`;
+    row.classList.add('opacity-50');
+    btn.classList.add('hidden');
+  } else if (source === 'settings') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ A key is stored in the database.</span>
+      <span class="text-gray-400">Enter a new one below to replace it.</span>`;
+    row.classList.remove('opacity-50');
+    btn.classList.remove('hidden');
+  } else {
+    el.innerHTML = `<span class="text-amber-600 font-medium">No key set.</span>
+      <span class="text-gray-400">Alpha Vantage is skipped until you add one.</span>`;
+    row.classList.remove('opacity-50');
+    btn.classList.add('hidden');
+  }
+}
+
+function renderAvUsage(u) {
+  if (!u) return;
+  const el = document.getElementById('av-usage');
+  el.textContent = `${u.used} of ~${u.limit} free-tier calls used today (${u.day} UTC). `
+    + `Counted in this process only — a redeploy resets it.`;
+  el.className = `text-xs mt-1 ${u.used >= u.limit ? 'text-red-600' : 'text-gray-400'}`;
+}
+
+async function saveAvKey() {
+  const input = document.getElementById('f-av');
+  const key   = input.value.trim();
+  if (!key) { status('Enter a key first', 'amber'); return; }
+  const r = await post({ alphavantage_api_key: key });
+  if (r) {
+    input.value = '';
+    renderAvStatus(r.av_key_source);
+    status('Alpha Vantage key saved', 'green');
+    testAv();
+  }
+}
+
+async function clearAvKey() {
+  if (!confirm('Remove the stored Alpha Vantage key?')) return;
+  const r = await post({ alphavantage_api_key: '__CLEAR__' });
+  if (r) {
+    renderAvStatus(r.av_key_source);
+    document.getElementById('av-test-result').textContent = '';
+    status('Alpha Vantage key removed', 'green');
+  }
+}
+
+async function testAv() {
+  const out = document.getElementById('av-test-result');
+  const btn = document.getElementById('av-test');
+  out.textContent = 'Checking…';
+  out.className = 'text-xs mt-2 text-gray-400';
+  btn.disabled = true;
+  try {
+    const sym  = (document.getElementById('av-test-symbol').value || 'IBM').trim().toUpperCase();
+    const res  = await fetch(`/api/alphavantage/test?symbol=${encodeURIComponent(sym)}`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      const p = data.sample.profile || {};
+      const e = data.sample.estimates || {};
+      const line1 = `✓ Key works — ${p.name || p.symbol}${p.exchange ? ` (${p.exchange})` : ''}`;
+      // Each test burns two of the 25 daily calls, so say so — otherwise it's an
+      // invisible cost and the quota runs out during debugging.
+      const line2 = e.ok
+        ? `✓ Forward estimates for ${sym} — ${e.detail}`
+        : `✗ Forward estimates unavailable for ${sym} — ${e.detail || 'unknown reason'}`;
+      out.innerHTML = `${line1}<br>${line2}`;
+      out.className = `text-xs mt-2 ${e.ok ? 'text-green-600' : 'text-amber-600'}`;
+      renderAvUsage(data.sample.usage);
+    } else {
+      out.textContent = data.error || `Failed (${res.status})`;
+      out.className = 'text-xs mt-2 text-red-600';
+    }
+  } catch (e) {
+    out.textContent = 'Could not reach the server.';
+    out.className = 'text-xs mt-2 text-red-600';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function load() {
   const s = await (await fetch('/api/settings')).json();
   defaults = s.default_prompts;
 
   renderKeyStatus(s.key_source);
   renderFmpStatus(s.fmp_key_source);
+  renderAvStatus(s.av_key_source);
+  renderAvUsage(s.av_usage);
   document.getElementById('system-prompt').textContent = s.system_prompt;
 
   const sel = document.getElementById('f-model');

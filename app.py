@@ -10,6 +10,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import ai
+import alphavantage
 import db
 import fmp
 import storage
@@ -1232,6 +1233,16 @@ def _trailing_capex(t):
     return None
 
 
+def _growth_pct(now, before):
+    if now is None or not before:
+        return None
+    return (now / before - 1) * 100
+
+
+def _ratio(num, den):
+    return (num / den) if num is not None and den else None
+
+
 def _consensus_from_fmp(ticker, price, mcap, ev, trailing):
     """Forward consensus with the multiples and margins Yahoo can't reach.
 
@@ -1251,13 +1262,7 @@ def _consensus_from_fmp(ticker, price, mcap, ev, trailing):
         return {'source': 'Yahoo', 'periods': None,
                 'fmp_error': f'FMP returned no analyst estimates for {ticker}.'}
 
-    def growth(now, before):
-        if now is None or not before:
-            return None
-        return (now / before - 1) * 100
-
-    def ratio(num, den):
-        return (num / den) if num is not None and den else None
+    growth, ratio = _growth_pct, _ratio
 
     periods, previous = [], trailing
     for row in rows:
@@ -1286,6 +1291,54 @@ def _consensus_from_fmp(ticker, price, mcap, ev, trailing):
         previous = {'revenue': rev, 'ebitda': ebitda, 'ebit': ebit, 'eps': eps}
 
     return {'source': 'FMP', 'periods': periods}
+
+
+def _consensus_from_alphavantage(ticker, price, mcap, trailing):
+    """Forward EPS and revenue, with dispersion and revision momentum.
+
+    Alpha Vantage publishes no forward EBITDA or EBIT, so this does not close
+    the forward-multiples gap — those rows stay blank, same as Yahoo. What it
+    adds is how contested each estimate is and which way it has been moving,
+    which is the part you'd otherwise go hunting for by hand.
+    """
+    if not alphavantage.enabled():
+        return None
+    try:
+        rows = alphavantage.annual_estimates(ticker)
+    except Exception as exc:
+        app.logger.info('Alpha Vantage estimates unavailable for %s: %s', ticker, exc)
+        return {'error': str(exc)}
+    if not rows:
+        return {'error': f'Alpha Vantage published no annual estimates for {ticker}.'}
+
+    periods, previous = [], trailing
+    for row in rows:
+        rev, eps = row['revenue'], row['eps']
+        drift_30 = _growth_pct(eps, row['eps_30d_ago'])
+        drift_90 = _growth_pct(eps, row['eps_90d_ago'])
+        periods.append({
+            'label':    row['label'],
+            'date':     row['date'],
+            'analysts': row['analysts'],
+            'revenue':  rev,
+            'eps':      eps,
+            'pe':          _ratio(price, eps),
+            'price_sales': _ratio(mcap, rev),
+            'revenue_growth': _growth_pct(rev, previous.get('revenue')),
+            'eps_growth':     _growth_pct(eps, previous.get('eps')),
+            # Alpha Vantage-only: how wide the range is, and which way it moved.
+            'eps_high':       row['eps_high'],
+            'eps_low':        row['eps_low'],
+            'revenue_high':   row['revenue_high'],
+            'revenue_low':    row['revenue_low'],
+            'eps_drift_30d':  drift_30,
+            'eps_drift_90d':  drift_90,
+            'revisions_up':   row['revisions_up'],
+            'revisions_down': row['revisions_down'],
+        })
+        previous = {'revenue': rev, 'eps': eps}
+
+    return {'source': 'Alpha Vantage', 'periods': periods}
 
 
 def _consensus(t, price, mcap):
@@ -1329,16 +1382,31 @@ def _consensus(t, price, mcap):
 
 
 def _pick_consensus(t, ticker, price, mcap, ev, trailing):
-    """FMP when it can answer, Yahoo otherwise — carrying why, if FMP couldn't."""
+    """Richest forward view available: FMP, then Alpha Vantage, then Yahoo.
+
+    FMP leads because it alone carries forward EBITDA and EBIT, which is what
+    makes the forward multiples and margins computable. Each provider that
+    couldn't answer records why, so a quiet fallback never reads as a choice.
+    """
+    notes = []
+
     attempt = _consensus_from_fmp(ticker, price, mcap, ev, trailing)
     if attempt and attempt.get('periods'):
         return attempt
+    if attempt and attempt.get('fmp_error'):
+        notes.append(f'FMP: {attempt["fmp_error"]}')
+
+    av = _consensus_from_alphavantage(ticker, price, mcap, trailing)
+    if av and av.get('periods'):
+        av['notes'] = notes
+        return av
+    if av and av.get('error'):
+        notes.append(f'Alpha Vantage: {av["error"]}')
 
     fallback = _consensus(t, price, mcap)
-    if attempt and attempt.get('fmp_error'):
-        fallback['fmp_error'] = attempt['fmp_error']
-    elif not fmp.enabled():
-        fallback['fmp_error'] = None    # no key — the UI already says to add one
+    fallback['notes'] = notes
+    # Kept so a page served just before this shape shipped still renders.
+    fallback['fmp_error'] = notes[0] if notes else None
     return fallback
 
 
@@ -2428,6 +2496,13 @@ def download_template_for_project(project_id):
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
+def _clear_tearsheet_cache():
+    """Tearsheets cache for 15 minutes and carry the consensus block, so a newly
+    saved key appears to do nothing until it expires unless we drop them."""
+    for cached in [k for k in _cache if k.startswith('tear:')]:
+        _cache.pop(cached, None)
+
+
 # ── Admin / settings ─────────────────────────────────────────────────────────
 # The API key is never returned by the API — only whether one is set and where
 # it came from. An env-provided key can't be edited or read back through the UI.
@@ -2442,6 +2517,8 @@ def get_settings():
     return jsonify({
         'key_source':      ai.key_source(),
         'fmp_key_source':  fmp.key_source(),
+        'av_key_source':   alphavantage.key_source(),
+        'av_usage':        alphavantage.usage(),
         'model':           ai.model(),
         'models':          [{'id': m, 'label': l} for m, l in ai.MODELS],
         'effort':          ai.effort(),
@@ -2470,10 +2547,18 @@ def save_settings():
             db.set_setting('fmp_api_key', '')
         elif key:
             db.set_setting('fmp_api_key', key)
-        # Tearsheets are cached for 15 minutes and carry the consensus block,
-        # so without this a new key appears to do nothing until it expires.
-        for cached in [k for k in _cache if k.startswith('tear:')]:
-            _cache.pop(cached, None)
+        _clear_tearsheet_cache()
+
+    if 'alphavantage_api_key' in data:
+        key = (data.get('alphavantage_api_key') or '').strip()
+        if key == '__CLEAR__':
+            db.set_setting('alphavantage_api_key', '')
+        elif key:
+            db.set_setting('alphavantage_api_key', key)
+        # Alpha Vantage holds its own six-hour cache on top of the tearsheet's
+        # fifteen minutes, so both have to go or a new key looks inert.
+        alphavantage.clear_cache()
+        _clear_tearsheet_cache()
 
     if data.get('model') in dict(ai.MODELS):
         db.set_setting('ai_model', data['model'])
@@ -2487,6 +2572,7 @@ def save_settings():
 
     return jsonify({'ok': True, 'key_source': ai.key_source(),
                     'fmp_key_source': fmp.key_source(),
+                    'av_key_source': alphavantage.key_source(),
                     'model': ai.model(), 'effort': ai.effort()})
 
 
@@ -2499,6 +2585,20 @@ def test_fmp_key():
     except fmp.NotConfigured as exc:
         return jsonify({'error': str(exc)}), 503
     except fmp.FMPError as exc:
+        return jsonify({'error': str(exc)}), 502
+
+
+@app.route('/api/alphavantage/test', methods=['POST'])
+def test_alphavantage_key():
+    """Same idea as the FMP test: prove it answers, and say what it answers with."""
+    symbol = (request.args.get('symbol') or request.form.get('symbol') or 'IBM')
+    try:
+        return jsonify({'ok': True, 'sample': alphavantage.test(symbol)})
+    except alphavantage.NotConfigured as exc:
+        return jsonify({'error': str(exc)}), 503
+    except alphavantage.RateLimited as exc:
+        return jsonify({'error': str(exc)}), 429
+    except alphavantage.AlphaVantageError as exc:
         return jsonify({'error': str(exc)}), 502
 
 
