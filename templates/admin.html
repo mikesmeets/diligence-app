@@ -72,6 +72,25 @@
     </div>
   </div>
 
+  <!-- Model template -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
+    <div id="template-status" class="text-sm mb-3"></div>
+    <div class="flex items-center gap-3 flex-wrap">
+      <input id="f-template" type="file" accept=".xlsx,.xlsm"
+        class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+      <button id="tpl-btn" onclick="uploadTemplate()"
+        class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">Upload</button>
+      <button id="tpl-clear" onclick="clearTemplate()"
+        class="hidden px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors">Remove</button>
+    </div>
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      Your blank starting model. Every project's Model page offers it as a download, and the
+      copy it hands out is already tagged for that project — so when you've filled it in,
+      dropping it back files it as v1 without you saying where it goes.
+    </p>
+  </div>
+
   <!-- System prompt (read-only) -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <div class="flex items-baseline justify-between mb-3">
@@ -171,6 +190,61 @@ async function load() {
 
   FIELDS.forEach(f => { document.getElementById(`p-${f}`).value = s.prompts[f] || ''; });
   clearDirty();
+  loadTemplate();
+}
+
+// ── Model template ─────────────────────────────────────────────────────────
+
+async function loadTemplate() {
+  const el  = document.getElementById('template-status');
+  const rm  = document.getElementById('tpl-clear');
+  let tpl = null;
+  try { tpl = (await (await fetch('/api/model-template')).json()).template; } catch (e) {}
+
+  if (tpl) {
+    const when = tpl.uploaded_at ? new Date(tpl.uploaded_at).toLocaleDateString() : '';
+    el.innerHTML = `<a href="/api/model-template/download"
+        class="text-blue-600 hover:text-blue-800 font-medium transition-colors">${tpl.filename}</a>
+      <span class="text-gray-400 text-xs ml-2">uploaded ${when}</span>`;
+    rm.classList.remove('hidden');
+  } else {
+    el.innerHTML = '<span class="text-gray-400">No template yet.</span>';
+    rm.classList.add('hidden');
+  }
+}
+
+async function uploadTemplate() {
+  const file = document.getElementById('f-template').files[0];
+  if (!file) { status('Choose a file first', 'amber'); return; }
+
+  const btn = document.getElementById('tpl-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch('/api/model-template', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const body = await res.text();
+      let msg = `Server error ${res.status}.`;
+      try { msg = JSON.parse(body).error || msg; } catch (e) {}
+      status(msg, 'red');
+      return;
+    }
+    document.getElementById('f-template').value = '';
+    await loadTemplate();
+    status('Template saved', 'green');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+  }
+}
+
+async function clearTemplate() {
+  if (!confirm('Remove the model template?')) return;
+  await fetch('/api/model-template', { method: 'DELETE' });
+  await loadTemplate();
+  status('Template removed', 'green');
 }
 
 function resetPrompt(field) {

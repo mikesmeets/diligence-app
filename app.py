@@ -72,7 +72,41 @@ def _seed_idea_types():
                 )
 
 
+def _remap_note_sources():
+    """Move notes off the shared idea-sources list onto their own.
+
+    Note sources were briefly the same table as idea sources. Any note written
+    in that window points at a `sources` row; copy the name across so the label
+    survives, then repoint it.
+    """
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            'SELECT DISTINCT s.name FROM project_notes n JOIN sources s ON n.source_id = s.id '
+            'WHERE n.source_id IS NOT NULL AND n.note_source_id IS NULL'
+        )
+        names = [r['name'] if isinstance(r, dict) else r[0] for r in cur.fetchall()]
+        for name in names:
+            if db.IS_PG:
+                cur.execute(
+                    f'INSERT INTO note_sources (name) VALUES ({db.PH}) '
+                    f'ON CONFLICT (name) DO NOTHING', (name,),
+                )
+            else:
+                cur.execute(f'INSERT OR IGNORE INTO note_sources (name) VALUES ({db.PH})', (name,))
+            cur.execute(f'SELECT id FROM note_sources WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+            if row:
+                cur.execute(
+                    f'UPDATE project_notes SET note_source_id = {db.PH} '
+                    f'WHERE note_source_id IS NULL AND source_id IN '
+                    f'(SELECT id FROM sources WHERE name = {db.PH})',
+                    (row['id'], name),
+                )
+
+
 _seed_idea_types()
+_remap_note_sources()
 
 
 # ── Price helpers ────────────────────────────────────────────────────────────
@@ -1392,9 +1426,9 @@ def _delete_keys(keys):
 
 def _notes_for(cur, project_id):
     cur.execute(
-        f'SELECT n.id, n.body, n.source_id, s.name AS source_name, '
+        f'SELECT n.id, n.body, n.note_source_id, s.name AS source_name, s.kind AS source_kind, '
         f'n.created_at, n.updated_at FROM project_notes n '
-        f'LEFT JOIN sources s ON n.source_id = s.id '
+        f'LEFT JOIN note_sources s ON n.note_source_id = s.id '
         f'WHERE n.project_id = {db.PH} ORDER BY n.created_at DESC, n.id DESC',
         (project_id,),
     )
@@ -1430,7 +1464,7 @@ def create_note(project_id):
         data  = request.get_json(force=True)
         files = []
     body      = (data.get('body') or '').strip()
-    source_id = _opt_int(data, 'source_id')
+    source_id = _opt_int(data, 'note_source_id')
 
     if not body and not files:
         return jsonify({'error': 'A note needs some text or a file'}), 400
@@ -1454,7 +1488,7 @@ def create_note(project_id):
         cur = db.cursor(conn)
         note_id = db.insert_id(
             cur, 'project_notes',
-            ('project_id', 'body', 'source_id', 'created_at', 'updated_at'),
+            ('project_id', 'body', 'note_source_id', 'created_at', 'updated_at'),
             (project_id, body, source_id, now, now),
         )
         for s in stored:
@@ -1474,9 +1508,9 @@ def update_note(note_id):
     params = [(data.get('body') or '').strip(), datetime.now().isoformat()]
     # Only touch the source when the caller actually sent one, so editing the
     # text alone can't silently clear it.
-    if 'source_id' in data:
-        sets.append(f'source_id = {db.PH}')
-        params.append(_opt_int(data, 'source_id'))
+    if 'note_source_id' in data:
+        sets.append(f'note_source_id = {db.PH}')
+        params.append(_opt_int(data, 'note_source_id'))
 
     with db.get_conn() as conn:
         cur = db.cursor(conn)
@@ -1485,9 +1519,9 @@ def update_note(note_id):
             params + [note_id],
         )
         cur.execute(
-            f'SELECT n.id, n.project_id, n.body, n.source_id, s.name AS source_name, '
-            f'n.created_at, n.updated_at FROM project_notes n '
-            f'LEFT JOIN sources s ON n.source_id = s.id WHERE n.id = {db.PH}', (note_id,),
+            f'SELECT n.id, n.project_id, n.body, n.note_source_id, s.name AS source_name, '
+            f's.kind AS source_kind, n.created_at, n.updated_at FROM project_notes n '
+            f'LEFT JOIN note_sources s ON n.note_source_id = s.id WHERE n.id = {db.PH}', (note_id,),
         )
         row = db.to_dict(cur.fetchone())
     if not row:
@@ -1565,6 +1599,79 @@ def download_note_attachment(attachment_id):
     if not row:
         return jsonify({'error': 'Not found'}), 404
     return _redirect_to_file(row['object_key'], row['filename'])
+
+
+# ── Note sources ────────────────────────────────────────────────────────────
+# Who a note came from — a broker, a fund, an expert call. Separate from the
+# `sources` list, which records where an *idea* originated.
+
+@app.route('/api/note-sources', methods=['GET'])
+def get_note_sources():
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute('SELECT id, name, kind FROM note_sources ORDER BY kind, name')
+        return jsonify({'sources': db.to_dicts(cur.fetchall()), 'kinds': db.NOTE_SOURCE_KINDS})
+
+
+@app.route('/api/note-sources', methods=['POST'])
+def create_note_source():
+    data = request.get_json(force=True)
+    name = (data.get('name') or '').strip()
+    kind = (data.get('kind') or '').strip() or None
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO note_sources (name, kind) VALUES ({db.PH}, {db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET kind = EXCLUDED.kind RETURNING id, name, kind',
+                (name, kind),
+            )
+            row = db.to_dict(cur.fetchone())
+        else:
+            cur.execute(
+                f'INSERT INTO note_sources (name, kind) VALUES ({db.PH}, {db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET kind = excluded.kind', (name, kind),
+            )
+            cur.execute(f'SELECT id, name, kind FROM note_sources WHERE name = {db.PH}', (name,))
+            row = db.to_dict(cur.fetchone())
+    return jsonify(row), 201
+
+
+@app.route('/api/note-sources/<int:source_id>', methods=['PATCH'])
+def update_note_source(source_id):
+    data = request.get_json(force=True)
+    sets, params = [], []
+    if 'name' in data:
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': 'name cannot be empty'}), 400
+        sets.append(f'name = {db.PH}'); params.append(name)
+    if 'kind' in data:
+        sets.append(f'kind = {db.PH}'); params.append((data.get('kind') or '').strip() or None)
+    if not sets:
+        return jsonify({'error': 'nothing to update'}), 400
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'UPDATE note_sources SET {", ".join(sets)} WHERE id = {db.PH}', params + [source_id],
+        )
+        cur.execute(f'SELECT id, name, kind FROM note_sources WHERE id = {db.PH}', (source_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
+@app.route('/api/note-sources/<int:source_id>', methods=['DELETE'])
+def delete_note_source(source_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'DELETE FROM note_sources WHERE id = {db.PH}', (source_id,))
+    return jsonify({'ok': True})
 
 
 # ── Document types (user-managed, like sources) ─────────────────────────────
@@ -2121,6 +2228,93 @@ def writeup_detail(project_id, field):
     return render_template(
         'detail.html', project=project, field=field, label=ai.FIELDS[field]
     )
+
+
+# ── Model template ──────────────────────────────────────────────────────────
+# One blank model kept in Admin. Downloading it from a project hands back a copy
+# already tagged for that project, so filling it in and dropping it back files
+# it as v1 without being told where it belongs.
+
+def _template_info():
+    key = db.get_setting('model_template_key')
+    if not key:
+        return None
+    return {'object_key': key,
+            'filename': db.get_setting('model_template_name') or 'model-template.xlsx',
+            'uploaded_at': db.get_setting('model_template_uploaded_at')}
+
+
+@app.route('/api/model-template', methods=['GET'])
+def get_model_template():
+    info = _template_info()
+    return jsonify({
+        'template': {'filename': info['filename'], 'uploaded_at': info['uploaded_at']}
+        if info else None,
+    })
+
+
+@app.route('/api/model-template', methods=['POST'])
+def set_model_template():
+    if missing := _bucket_missing():
+        return missing
+
+    existing = _template_info()
+    info, err = _store_upload(request.files.get('file'), parts=['templates'])
+    if err:
+        return err
+
+    db.set_setting('model_template_key', info['object_key'])
+    db.set_setting('model_template_name', info['filename'])
+    db.set_setting('model_template_uploaded_at', datetime.now().isoformat())
+    if existing and existing['object_key'] != info['object_key']:
+        storage.delete(existing['object_key'])   # only one template at a time
+    return jsonify({'filename': info['filename'], 'size_bytes': info['size_bytes']}), 201
+
+
+@app.route('/api/model-template', methods=['DELETE'])
+def clear_model_template():
+    info = _template_info()
+    for key in ('model_template_key', 'model_template_name', 'model_template_uploaded_at'):
+        db.set_setting(key, '')
+    if info:
+        storage.delete(info['object_key'])
+    return jsonify({'ok': True})
+
+
+@app.route('/api/model-template/download')
+def download_model_template():
+    info = _template_info()
+    if not info:
+        return jsonify({'error': 'No template has been uploaded yet.'}), 404
+    return _redirect_to_file(info['object_key'], info['filename'], force_download=True)
+
+
+@app.route('/api/projects/<int:project_id>/model-template')
+def download_template_for_project(project_id):
+    """The template, stamped for this project so it self-files on the way back."""
+    from flask import send_file
+    from io import BytesIO
+
+    info = _template_info()
+    if not info:
+        return jsonify({'error': 'No template has been uploaded yet.'}), 404
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+
+    try:
+        raw = storage.read(info['object_key'])
+    except Exception as exc:
+        return jsonify({'error': f'Could not read the template: {exc}'}), 502
+
+    # Tag it as belonging here, with no version yet — the first upload becomes v1.
+    stamped = xlsxmeta.stamp_for_project(raw, project_id, project['name'])
+    stem, _, ext = info['filename'].rpartition('.')
+    label = storage.safe_segment(project.get('ticker') or project['name'], 'model')
+    name = f'{label} {stem or info["filename"]}' + (f'.{ext}' if ext else '')
+
+    return send_file(BytesIO(stamped), as_attachment=True, download_name=name,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
 # ── Admin / settings ─────────────────────────────────────────────────────────

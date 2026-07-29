@@ -13,10 +13,12 @@
         class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
       <div class="flex items-center gap-2">
         <label for="new-source" class="text-xs text-gray-400">Source</label>
-        <select id="new-source"
+        <select id="new-source" onchange="onSourceChange()"
           class="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500">
           <option value="">None</option>
         </select>
+        <button onclick="openSources()" title="Manage sources"
+          class="px-2 border border-gray-200 rounded-lg text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors text-sm">⚙</button>
       </div>
     </div>
     <button id="add-btn" onclick="addNote()"
@@ -27,31 +29,127 @@
 </div>
 
 <div id="notes"></div>
+
+<!-- Manage note sources -->
+<div id="sources-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-md">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-900">Note Sources</h2>
+      <button onclick="closeSources()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="px-6 py-4 space-y-3">
+      <div class="flex gap-2">
+        <input id="ns-name" type="text" placeholder="Name, e.g. Morgan Stanley"
+          class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        <select id="ns-kind"
+          class="border border-gray-300 rounded-lg px-2 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"></select>
+        <button onclick="addSource()"
+          class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Add</button>
+      </div>
+      <ul id="sources-list" class="divide-y divide-gray-100 max-h-72 overflow-y-auto rounded-lg border border-gray-200"></ul>
+      <p class="text-xs text-gray-400 leading-relaxed">
+        Separate from the Source on a collected idea — these are who a note came from.
+      </p>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-let notes = [], sources = [];
+let notes = [], sources = [], kinds = [];
 const openEdit = new Set();
 
 async function load() {
   const [n, s] = await Promise.all([
     fetch(`/api/projects/${PROJECT_ID}/notes`).then(r => r.ok ? r.json() : []),
-    fetch('/api/sources').then(r => r.ok ? r.json() : []),
+    fetch('/api/note-sources').then(r => r.ok ? r.json() : { sources: [], kinds: [] }),
   ]);
-  notes = n; sources = s;
+  notes = n; sources = s.sources; kinds = s.kinds;
   fillSourceSelect('new-source');
+  renderSourcesList();
   render();
 }
 
+// Grouped by kind so a long list stays navigable as it grows.
 function sourceOptions(selectedId) {
-  return '<option value="">None</option>' + sources.map(s =>
-    `<option value="${s.id}" ${s.id === selectedId ? 'selected' : ''}>${escHtml(s.name)}</option>`).join('');
+  const grouped = {};
+  sources.forEach(s => (grouped[s.kind || 'Uncategorised'] ||= []).push(s));
+  const groups = Object.entries(grouped).map(([kind, list]) =>
+    `<optgroup label="${escHtml(kind)}">` + list.map(s =>
+      `<option value="${s.id}" ${s.id === selectedId ? 'selected' : ''}>${escHtml(s.name)}</option>`
+    ).join('') + '</optgroup>').join('');
+  return '<option value="">None</option>' + groups + '<option value="__new__">＋ Add a source…</option>';
 }
 
 function fillSourceSelect(id, selectedId) {
   const sel = document.getElementById(id);
   if (sel) sel.innerHTML = sourceOptions(selectedId);
+}
+
+function onSourceChange() {
+  const sel = document.getElementById('new-source');
+  if (sel.value === '__new__') { sel.value = ''; openSources(); }
+}
+
+// ── Managing sources ───────────────────────────────────────────────────────
+function openSources() {
+  const kindSel = document.getElementById('ns-kind');
+  kindSel.innerHTML = '<option value="">No type</option>' +
+    kinds.map(k => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join('');
+  renderSourcesList();
+  document.getElementById('sources-modal').classList.remove('hidden');
+}
+
+function closeSources() {
+  document.getElementById('sources-modal').classList.add('hidden');
+}
+
+function renderSourcesList() {
+  const ul = document.getElementById('sources-list');
+  if (!ul) return;
+  ul.innerHTML = sources.length === 0
+    ? '<li class="px-3 py-3 text-sm text-gray-400">No sources yet.</li>'
+    : sources.map(s => `
+      <li class="flex items-center justify-between px-3 py-2 text-sm gap-3">
+        <span class="text-gray-800 min-w-0 truncate">${escHtml(s.name)}</span>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <select onchange="setKind(${s.id}, this.value)"
+            class="border border-gray-200 rounded px-1.5 py-0.5 text-xs text-gray-500 bg-white outline-none">
+            <option value="">No type</option>
+            ${kinds.map(k => `<option value="${escHtml(k)}" ${k === s.kind ? 'selected' : ''}>${escHtml(k)}</option>`).join('')}
+          </select>
+          <button onclick="removeSource(${s.id})" class="text-gray-300 hover:text-red-500 transition-colors text-xs">Delete</button>
+        </div>
+      </li>`).join('');
+}
+
+async function addSource() {
+  const name = document.getElementById('ns-name').value.trim();
+  if (!name) return;
+  const res = await fetch('/api/note-sources', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, kind: document.getElementById('ns-kind').value }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  document.getElementById('ns-name').value = '';
+  await load();
+  openSources();
+}
+
+async function setKind(id, kind) {
+  await fetch(`/api/note-sources/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind }),
+  });
+  await load();
+}
+
+async function removeSource(id) {
+  if (!confirm('Delete this source? Notes using it lose their source.')) return;
+  await fetch(`/api/note-sources/${id}`, { method: 'DELETE' });
+  await load();
+  openSources();
 }
 
 function attachmentChip(a) {
@@ -81,7 +179,8 @@ function render() {
       <div class="flex items-baseline justify-between gap-3 mb-2">
         <span class="text-xs text-gray-400">${fmtWhen(n.created_at)}${
           n.updated_at && n.updated_at !== n.created_at ? ' · edited' : ''}${
-          n.source_name ? ` · <span class="text-gray-500 font-medium">${escHtml(n.source_name)}</span>` : ''}</span>
+          n.source_name ? ` · <span class="text-gray-500 font-medium">${escHtml(n.source_name)}</span>${
+            n.source_kind ? ` <span class="text-gray-300">(${escHtml(n.source_kind)})</span>` : ''}` : ''}</span>
         <div class="flex gap-3 flex-shrink-0">
           <button onclick="toggleEdit(${n.id})" class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${editing ? 'Cancel' : 'Edit'}</button>
           <label class="text-xs text-gray-400 hover:text-blue-600 transition-colors cursor-pointer ${STORAGE_ENABLED ? '' : 'hidden'}">
@@ -102,7 +201,7 @@ function render() {
             <label class="text-xs text-gray-400">Source</label>
             <select id="src-${n.id}"
               class="border border-gray-300 rounded-lg px-2 py-1 text-xs bg-white outline-none focus:ring-2 focus:ring-blue-500">
-              ${sourceOptions(n.source_id)}
+              ${sourceOptions(n.note_source_id)}
             </select>
           </div>
         </div>
@@ -135,7 +234,7 @@ async function addNote() {
     const fd = new FormData();
     fd.append('body', body);
     const source = document.getElementById('new-source').value;
-    if (source) fd.append('source_id', source);
+    if (source && source !== '__new__') fd.append('note_source_id', source);
     files.forEach(f => fd.append('files', f));
     const res = await fetch(`/api/projects/${PROJECT_ID}/notes`, { method: 'POST', body: fd });
     if (!res.ok) { alert(await apiError(res)); return; }
@@ -153,7 +252,7 @@ async function saveNote(id) {
   const source = document.getElementById(`src-${id}`).value;
   const res    = await fetch(`/api/notes/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ body, source_id: source || null }),
+    body: JSON.stringify({ body, note_source_id: source === '__new__' ? null : (source || null) }),
   });
   if (!res.ok) { alert(await apiError(res)); return; }
   openEdit.delete(id);

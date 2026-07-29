@@ -250,11 +250,11 @@ _PK = 'SERIAL PRIMARY KEY' if IS_PG else 'INTEGER PRIMARY KEY AUTOINCREMENT'
 _CREATE_NOTES = f"""
     CREATE TABLE IF NOT EXISTS project_notes (
         id         {_PK},
-        project_id INTEGER NOT NULL,
-        body       TEXT    NOT NULL,
-        source_id  INTEGER,
-        created_at TEXT    NOT NULL,
-        updated_at TEXT    NOT NULL
+        project_id     INTEGER NOT NULL,
+        body           TEXT    NOT NULL,
+        note_source_id INTEGER,
+        created_at     TEXT    NOT NULL,
+        updated_at     TEXT    NOT NULL
     )
 """
 
@@ -269,6 +269,24 @@ _CREATE_NOTE_FILES = f"""
         created_at TEXT    NOT NULL
     )
 """
+
+# Who a note came from. Deliberately separate from `sources`, which records where
+# an *idea* originated — these are counterparties (a broker, a fund, an expert
+# call) and carry their own taxonomy.
+_CREATE_NOTE_SOURCES = f"""
+    CREATE TABLE IF NOT EXISTS note_sources (
+        id   {_PK},
+        name TEXT NOT NULL UNIQUE,
+        kind TEXT
+    )
+"""
+
+# Starter taxonomy. Held in code for now; a user-managed list is the obvious
+# next step if these stop fitting.
+NOTE_SOURCE_KINDS = [
+    'Sell-side', 'Buy-side', 'Company', 'Expert network',
+    'Industry contact', 'Press', 'Other',
+]
 
 _CREATE_DOC_TYPES = f"""
     CREATE TABLE IF NOT EXISTS doc_types (
@@ -380,6 +398,7 @@ def init():
         cur.execute(_CREATE_JOBS_INDEX)
         cur.execute(_CREATE_NOTES)
         cur.execute(_CREATE_NOTE_FILES)
+        cur.execute(_CREATE_NOTE_SOURCES)
         cur.execute(_CREATE_DOC_TYPES)
         cur.execute(_CREATE_DOCUMENTS)
         cur.execute(_CREATE_MODEL_VERSIONS)
@@ -406,8 +425,10 @@ _MIGRATIONS = [
 
 
 _NOTE_MIGRATIONS = [
-    # Where the note came from — reuses the shared sources list.
-    ('source_id', 'INTEGER'),
+    # `source_id` briefly pointed at the shared idea-sources list. It is left in
+    # place so the one-time remap in app.py can read it, but nothing writes it.
+    ('source_id',      'INTEGER'),
+    ('note_source_id', 'INTEGER'),
 ]
 
 _PROJECT_MIGRATIONS = [

@@ -117,6 +117,11 @@ def presigned_url(key: str, expires: int = 3600, download_as: str = None) -> str
     )
 
 
+def read(key: str) -> bytes:
+    """Fetch an object's bytes — needed when the server has to alter a file."""
+    return _client().get_object(Bucket=_BUCKET, Key=key)['Body'].read()
+
+
 def move(old_key: str, new_key: str) -> str:
     """Copy an object to a new key and drop the old one. Returns the key in use."""
     if old_key == new_key:
