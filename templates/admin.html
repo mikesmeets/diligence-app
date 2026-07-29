@@ -141,6 +141,25 @@
     </p>
   </div>
 
+  <!-- Provider diagnosis -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+      Diagnose a Ticker
+    </p>
+    <div class="flex gap-2 flex-wrap items-center">
+      <input id="diag-symbol" placeholder="CPRT" autocomplete="off" spellcheck="false"
+        class="w-32 border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono uppercase outline-none focus:ring-2 focus:ring-blue-500" />
+      <button id="diag-btn" onclick="diagnose()"
+        class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Ask all three</button>
+    </div>
+    <div id="diag-result" class="text-xs mt-3 space-y-1 font-mono"></div>
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      Asks FMP, Alpha Vantage and Yahoo the same question and shows what each one
+      actually said. Use it when the Consensus block falls back and the reason isn't
+      obvious. Costs one Alpha Vantage call.
+    </p>
+  </div>
+
   <!-- Model template -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
@@ -203,6 +222,13 @@
 <script>
 const FIELDS = {{ fields.keys() | list | tojson }};
 let defaults = {};
+
+// Provider error strings are third-party text going into innerHTML — escape them.
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 function status(msg, tone = 'gray') {
   const el = document.getElementById('save-status');
@@ -405,6 +431,38 @@ async function testAv() {
   } catch (e) {
     out.textContent = 'Could not reach the server.';
     out.className = 'text-xs mt-2 text-red-600';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function diagnose() {
+  const out = document.getElementById('diag-result');
+  const btn = document.getElementById('diag-btn');
+  const sym = (document.getElementById('diag-symbol').value || '').trim().toUpperCase();
+  if (!sym) { status('Enter a ticker first', 'amber'); return; }
+
+  out.innerHTML = '<span class="text-gray-400">Asking…</span>';
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`/api/diagnose/${encodeURIComponent(sym)}`);
+    const data = await res.json();
+    if (!res.ok) {
+      out.innerHTML = `<span class="text-red-600">${data.error || `Failed (${res.status})`}</span>`;
+      return;
+    }
+    const line = (name, r) => {
+      const mark  = r.ok ? '✓' : (r.enabled ? '✗' : '·');
+      const color = r.ok ? 'text-green-600' : (r.enabled ? 'text-amber-600' : 'text-gray-400');
+      return `<div class="${color}">${mark} ${name.padEnd(14, ' ')} ${escHtml(r.detail || '')}</div>`;
+    };
+    out.innerHTML =
+      line('FMP',           data.fmp)
+      + line('Alpha Vantage', data.alphavantage)
+      + line('Yahoo',        data.yahoo);
+    if (data.alphavantage && data.alphavantage.usage) renderAvUsage(data.alphavantage.usage);
+  } catch (e) {
+    out.innerHTML = '<span class="text-red-600">Could not reach the server.</span>';
   } finally {
     btn.disabled = false;
   }

@@ -2602,6 +2602,62 @@ def test_alphavantage_key():
         return jsonify({'error': str(exc)}), 502
 
 
+@app.route('/api/diagnose/<ticker>')
+def diagnose_providers(ticker):
+    """Ask every consensus source about one ticker and report each answer.
+
+    The tearsheet only shows the source that won, plus a footnote. When a name
+    falls back and it isn't obvious why, this asks all three the same question
+    and puts their answers side by side — which beats reasoning backwards from
+    a single truncated error string.
+
+    Alpha Vantage is asked for estimates only, not the company overview, to
+    spend one call of the daily 25 rather than two.
+    """
+    ticker = (ticker or '').strip().upper()
+    out = {'ticker': ticker}
+
+    out['fmp'] = {'enabled': fmp.enabled()}
+    if fmp.enabled():
+        try:
+            rows = fmp.analyst_estimates(ticker, limit=5)
+            out['fmp'].update(
+                ok=bool(rows),
+                detail=(f'{len(rows)} year(s): '
+                        + ', '.join(r['label'] for r in rows)) if rows
+                       else 'Answered, but published no estimate rows.')
+        except Exception as exc:
+            out['fmp'].update(ok=False, detail=str(exc))
+    else:
+        out['fmp'].update(ok=False, detail='No key set.')
+
+    out['alphavantage'] = {'enabled': alphavantage.enabled()}
+    if alphavantage.enabled():
+        try:
+            rows = alphavantage.annual_estimates(ticker)
+            out['alphavantage'].update(
+                ok=bool(rows),
+                detail=(f'{len(rows)} year(s): '
+                        + ', '.join(r['label'] for r in rows)) if rows
+                       else 'Answered, but published no annual estimate rows.')
+        except Exception as exc:
+            out['alphavantage'].update(ok=False, detail=str(exc))
+        out['alphavantage']['usage'] = alphavantage.usage()
+    else:
+        out['alphavantage'].update(ok=False, detail='No key set.')
+
+    try:
+        rows = _consensus(yf.Ticker(ticker), None, None).get('periods') or []
+        out['yahoo'] = {'enabled': True, 'ok': bool(rows),
+                        'detail': (f'{len(rows)} period(s): '
+                                   + ', '.join(r['label'] for r in rows)) if rows
+                                  else 'No forward estimates.'}
+    except Exception as exc:
+        out['yahoo'] = {'enabled': True, 'ok': False, 'detail': str(exc)}
+
+    return jsonify(out)
+
+
 @app.route('/api/stock-price')
 def stock_price():
     ticker = request.args.get('ticker', '').strip().upper()
