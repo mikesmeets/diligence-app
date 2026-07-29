@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import ai
 import db
+import fmp
 import storage
 import xlsxmeta
 
@@ -2333,6 +2334,7 @@ def admin_page():
 def get_settings():
     return jsonify({
         'key_source':      ai.key_source(),
+        'fmp_key_source':  fmp.key_source(),
         'model':           ai.model(),
         'models':          [{'id': m, 'label': l} for m, l in ai.MODELS],
         'effort':          ai.effort(),
@@ -2355,6 +2357,13 @@ def save_settings():
         elif key:
             db.set_setting('anthropic_api_key', key)
 
+    if 'fmp_api_key' in data:
+        key = (data.get('fmp_api_key') or '').strip()
+        if key == '__CLEAR__':
+            db.set_setting('fmp_api_key', '')
+        elif key:
+            db.set_setting('fmp_api_key', key)
+
     if data.get('model') in dict(ai.MODELS):
         db.set_setting('ai_model', data['model'])
 
@@ -2366,7 +2375,19 @@ def save_settings():
             db.set_setting(f'prompt_{field}', (text or '').strip())
 
     return jsonify({'ok': True, 'key_source': ai.key_source(),
+                    'fmp_key_source': fmp.key_source(),
                     'model': ai.model(), 'effort': ai.effort()})
+
+
+@app.route('/api/fmp/test', methods=['POST'])
+def test_fmp_key():
+    """Prove the stored key actually works, rather than only that it's present."""
+    try:
+        return jsonify({'ok': True, 'sample': fmp.test()})
+    except fmp.NotConfigured as exc:
+        return jsonify({'error': str(exc)}), 503
+    except fmp.FMPError as exc:
+        return jsonify({'error': str(exc)}), 502
 
 
 @app.route('/api/stock-price')

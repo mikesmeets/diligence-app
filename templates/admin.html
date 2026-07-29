@@ -72,6 +72,35 @@
     </div>
   </div>
 
+  <!-- FMP API key -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+      Financial Modeling Prep API Key
+    </p>
+
+    <div id="fmp-status" class="text-sm mb-3"></div>
+
+    <div id="fmp-input-row">
+      <input id="f-fmp" type="password" autocomplete="off" placeholder="Your FMP API key"
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-blue-500" />
+      <div class="flex gap-2 mt-2 flex-wrap">
+        <button onclick="saveFmpKey()"
+          class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save key</button>
+        <button id="fmp-test" onclick="testFmp()"
+          class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Test connection</button>
+        <button onclick="clearFmpKey()" id="fmp-clear-btn"
+          class="hidden px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors">Remove stored key</button>
+      </div>
+      <p id="fmp-test-result" class="text-xs mt-2"></p>
+    </div>
+
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      Write-only, like the Anthropic key — never sent back to this page once saved.
+      Setting <code class="font-mono text-gray-500">FMP_API_KEY</code> as an environment
+      variable on Railway takes precedence and keeps the key out of the database entirely.
+    </p>
+  </div>
+
   <!-- Model template -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
@@ -173,11 +202,83 @@ function renderKeyStatus(source) {
   }
 }
 
+function renderFmpStatus(source) {
+  const el  = document.getElementById('fmp-status');
+  const btn = document.getElementById('fmp-clear-btn');
+  const row = document.getElementById('fmp-input-row');
+
+  if (source === 'env') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ Using the FMP_API_KEY environment variable.</span>
+      <span class="text-gray-400">This takes precedence — a key saved here would be ignored.</span>`;
+    row.classList.add('opacity-50');
+    btn.classList.add('hidden');
+  } else if (source === 'settings') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ A key is stored in the database.</span>
+      <span class="text-gray-400">Enter a new one below to replace it.</span>`;
+    row.classList.remove('opacity-50');
+    btn.classList.remove('hidden');
+  } else {
+    el.innerHTML = `<span class="text-amber-600 font-medium">No key set.</span>
+      <span class="text-gray-400">FMP data is unavailable until you add one.</span>`;
+    row.classList.remove('opacity-50');
+    btn.classList.add('hidden');
+  }
+}
+
+async function saveFmpKey() {
+  const input = document.getElementById('f-fmp');
+  const key   = input.value.trim();
+  if (!key) { status('Enter a key first', 'amber'); return; }
+  const r = await post({ fmp_api_key: key });
+  if (r) {
+    input.value = '';
+    renderFmpStatus(r.fmp_key_source);
+    status('FMP key saved', 'green');
+    testFmp();   // prove it works rather than only that it's stored
+  }
+}
+
+async function clearFmpKey() {
+  if (!confirm('Remove the stored FMP key?')) return;
+  const r = await post({ fmp_api_key: '__CLEAR__' });
+  if (r) {
+    renderFmpStatus(r.fmp_key_source);
+    document.getElementById('fmp-test-result').textContent = '';
+    status('FMP key removed', 'green');
+  }
+}
+
+async function testFmp() {
+  const out = document.getElementById('fmp-test-result');
+  const btn = document.getElementById('fmp-test');
+  out.textContent = 'Checking…';
+  out.className = 'text-xs mt-2 text-gray-400';
+  btn.disabled = true;
+  try {
+    const res  = await fetch('/api/fmp/test', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      const s = data.sample;
+      out.textContent = `✓ Connected — ${s.name || s.symbol} ${s.price != null ? `at ${s.price} ${s.currency || ''}` : ''}`.trim();
+      out.className = 'text-xs mt-2 text-green-600';
+    } else {
+      out.textContent = data.error || `Failed (${res.status})`;
+      out.className = 'text-xs mt-2 text-red-600';
+    }
+  } catch (e) {
+    out.textContent = 'Could not reach the server.';
+    out.className = 'text-xs mt-2 text-red-600';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function load() {
   const s = await (await fetch('/api/settings')).json();
   defaults = s.default_prompts;
 
   renderKeyStatus(s.key_source);
+  renderFmpStatus(s.fmp_key_source);
   document.getElementById('system-prompt').textContent = s.system_prompt;
 
   const sel = document.getElementById('f-model');
