@@ -43,6 +43,14 @@
           onchange="sendModel(this.files[0]); this.value='';" />
       </label>
     </p>
+    <div class="flex items-center justify-center gap-2 mt-2">
+      <label for="drop-target" class="text-xs text-gray-400">File under</label>
+      <select id="drop-target" onchange="renderDropHint()"
+        class="border border-gray-200 rounded-lg px-2 py-1 text-xs text-gray-600 bg-white outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="">Auto — whatever the file says</option>
+      </select>
+    </div>
+    <p id="drop-hint" class="text-xs text-amber-600 mt-1 hidden"></p>
     <p id="drop-status" class="text-xs mt-1"></p>
   </div>
 
@@ -226,6 +234,7 @@ async function loadAll() {
   subtypes  = st;
   ideaTypes = it;
   fillDropdowns();
+  renderDropTargets();
   render();
 }
 
@@ -484,8 +493,29 @@ zone.addEventListener('drop', (e) => {
   if (file) sendModel(file);
 });
 
+function renderDropTargets() {
+  const sel = document.getElementById('drop-target');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Auto — whatever the file says</option>' +
+    projects.map(p => `<option value="${p.id}" ${String(p.id) === cur ? 'selected' : ''}>${escHtml(p.name)}</option>`).join('');
+  renderDropHint();
+}
+
+function renderDropHint() {
+  const chosen = document.getElementById('drop-target').value;
+  const hint = document.getElementById('drop-hint');
+  hint.classList.toggle('hidden', !chosen);
+  if (chosen) {
+    const name = (projects.find(p => String(p.id) === chosen) || {}).name || '';
+    hint.textContent = `Overriding the file's own tag — anything dropped will be filed `
+      + `under ${name} and re-tagged to match.`;
+  }
+}
+
 async function sendModel(file, projectId = null) {
   if (!file) return;
+  // An explicit choice in the picker overrides whatever the file claims.
+  projectId = projectId || document.getElementById('drop-target').value || null;
   setDropStatus(`Uploading ${file.name}…`);
 
   const fd = new FormData();
@@ -502,10 +532,16 @@ async function sendModel(file, projectId = null) {
 
   if (res.ok) {
     const saved = await res.json();
-    setDropStatus(
-      `Filed as v${saved.version} of ${saved.project.name}` +
-      (saved.tagged ? ' — tagged, so next time it lands here on its own.' : '.'),
-      'green');
+    let msg = `Filed as v${saved.version} of ${saved.project.name}`;
+    if (saved.retagged_from) {
+      msg += ` — was tagged for ${saved.retagged_from.name}, now re-tagged to ${saved.project.name}.`;
+    } else if (saved.tagged) {
+      msg += ' — tagged, so next time it lands here on its own.';
+    } else {
+      msg += '.';
+    }
+    setDropStatus(msg, saved.retagged_from ? 'amber' : 'green');
+    await loadAll();
     return;
   }
 

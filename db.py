@@ -252,6 +252,7 @@ _CREATE_NOTES = f"""
         id         {_PK},
         project_id INTEGER NOT NULL,
         body       TEXT    NOT NULL,
+        source_id  INTEGER,
         created_at TEXT    NOT NULL,
         updated_at TEXT    NOT NULL
     )
@@ -404,6 +405,11 @@ _MIGRATIONS = [
 ]
 
 
+_NOTE_MIGRATIONS = [
+    # Where the note came from — reuses the shared sources list.
+    ('source_id', 'INTEGER'),
+]
+
 _PROJECT_MIGRATIONS = [
     ('business_description', 'TEXT'),
     ('pros',                 'TEXT'),
@@ -428,7 +434,8 @@ def migrate():
     """Add new columns to existing tables without breaking existing data."""
     with get_conn() as conn:
         cur = cursor(conn)
-        for table, cols in (('ideas', _MIGRATIONS), ('projects', _PROJECT_MIGRATIONS)):
+        for table, cols in (('ideas', _MIGRATIONS), ('projects', _PROJECT_MIGRATIONS),
+                            ('project_notes', _NOTE_MIGRATIONS)):
             for col, typ in cols:
                 if IS_PG:
                     cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}')

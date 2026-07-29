@@ -8,8 +8,17 @@
   <textarea id="new-body" rows="4" placeholder="What did you learn?"
     class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500"></textarea>
   <div class="flex items-center justify-between gap-3 mt-3 flex-wrap">
-    <input id="new-files" type="file" multiple {{ '' if storage_enabled else 'disabled' }}
-      class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
+    <div class="flex items-center gap-3 flex-wrap">
+      <input id="new-files" type="file" multiple {{ '' if storage_enabled else 'disabled' }}
+        class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
+      <div class="flex items-center gap-2">
+        <label for="new-source" class="text-xs text-gray-400">Source</label>
+        <select id="new-source"
+          class="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">None</option>
+        </select>
+      </div>
+    </div>
     <button id="add-btn" onclick="addNote()"
       class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
       Add note
@@ -22,13 +31,27 @@
 
 {% block scripts %}
 <script>
-let notes = [];
+let notes = [], sources = [];
 const openEdit = new Set();
 
 async function load() {
-  const res = await fetch(`/api/projects/${PROJECT_ID}/notes`);
-  notes = res.ok ? await res.json() : [];
+  const [n, s] = await Promise.all([
+    fetch(`/api/projects/${PROJECT_ID}/notes`).then(r => r.ok ? r.json() : []),
+    fetch('/api/sources').then(r => r.ok ? r.json() : []),
+  ]);
+  notes = n; sources = s;
+  fillSourceSelect('new-source');
   render();
+}
+
+function sourceOptions(selectedId) {
+  return '<option value="">None</option>' + sources.map(s =>
+    `<option value="${s.id}" ${s.id === selectedId ? 'selected' : ''}>${escHtml(s.name)}</option>`).join('');
+}
+
+function fillSourceSelect(id, selectedId) {
+  const sel = document.getElementById(id);
+  if (sel) sel.innerHTML = sourceOptions(selectedId);
 }
 
 function attachmentChip(a) {
@@ -57,7 +80,8 @@ function render() {
     <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
       <div class="flex items-baseline justify-between gap-3 mb-2">
         <span class="text-xs text-gray-400">${fmtWhen(n.created_at)}${
-          n.updated_at && n.updated_at !== n.created_at ? ' · edited' : ''}</span>
+          n.updated_at && n.updated_at !== n.created_at ? ' · edited' : ''}${
+          n.source_name ? ` · <span class="text-gray-500 font-medium">${escHtml(n.source_name)}</span>` : ''}</span>
         <div class="flex gap-3 flex-shrink-0">
           <button onclick="toggleEdit(${n.id})" class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${editing ? 'Cancel' : 'Edit'}</button>
           <label class="text-xs text-gray-400 hover:text-blue-600 transition-colors cursor-pointer ${STORAGE_ENABLED ? '' : 'hidden'}">
@@ -71,8 +95,17 @@ function render() {
       ${editing ? `
         <textarea id="edit-${n.id}" rows="5"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm leading-relaxed resize-y outline-none focus:ring-2 focus:ring-blue-500">${escHtml(n.body)}</textarea>
-        <button onclick="saveNote(${n.id})"
-          class="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+        <div class="flex items-center gap-3 mt-2">
+          <button onclick="saveNote(${n.id})"
+            class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+          <div class="flex items-center gap-2">
+            <label class="text-xs text-gray-400">Source</label>
+            <select id="src-${n.id}"
+              class="border border-gray-300 rounded-lg px-2 py-1 text-xs bg-white outline-none focus:ring-2 focus:ring-blue-500">
+              ${sourceOptions(n.source_id)}
+            </select>
+          </div>
+        </div>
       ` : `
         <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">${escHtml(n.body) || '<span class="text-gray-400">(no text)</span>'}</p>
       `}
@@ -101,6 +134,8 @@ async function addNote() {
   try {
     const fd = new FormData();
     fd.append('body', body);
+    const source = document.getElementById('new-source').value;
+    if (source) fd.append('source_id', source);
     files.forEach(f => fd.append('files', f));
     const res = await fetch(`/api/projects/${PROJECT_ID}/notes`, { method: 'POST', body: fd });
     if (!res.ok) { alert(await apiError(res)); return; }
@@ -114,10 +149,11 @@ async function addNote() {
 }
 
 async function saveNote(id) {
-  const body = document.getElementById(`edit-${id}`).value;
-  const res  = await fetch(`/api/notes/${id}`, {
+  const body   = document.getElementById(`edit-${id}`).value;
+  const source = document.getElementById(`src-${id}`).value;
+  const res    = await fetch(`/api/notes/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, source_id: source || null }),
   });
   if (!res.ok) { alert(await apiError(res)); return; }
   openEdit.delete(id);

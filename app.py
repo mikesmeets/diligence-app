@@ -1392,8 +1392,10 @@ def _delete_keys(keys):
 
 def _notes_for(cur, project_id):
     cur.execute(
-        f'SELECT id, body, created_at, updated_at FROM project_notes '
-        f'WHERE project_id = {db.PH} ORDER BY created_at DESC, id DESC',
+        f'SELECT n.id, n.body, n.source_id, s.name AS source_name, '
+        f'n.created_at, n.updated_at FROM project_notes n '
+        f'LEFT JOIN sources s ON n.source_id = s.id '
+        f'WHERE n.project_id = {db.PH} ORDER BY n.created_at DESC, n.id DESC',
         (project_id,),
     )
     notes = db.to_dicts(cur.fetchall())
@@ -1422,11 +1424,13 @@ def get_notes(project_id):
 def create_note(project_id):
     # Accepts multipart (body + any number of files) or plain JSON (body only).
     if request.content_type and 'multipart' in request.content_type:
-        body = (request.form.get('body') or '').strip()
+        data  = request.form
         files = [f for f in request.files.getlist('files') if f and f.filename]
     else:
-        body = (request.get_json(force=True).get('body') or '').strip()
+        data  = request.get_json(force=True)
         files = []
+    body      = (data.get('body') or '').strip()
+    source_id = _opt_int(data, 'source_id')
 
     if not body and not files:
         return jsonify({'error': 'A note needs some text or a file'}), 400
@@ -1450,8 +1454,8 @@ def create_note(project_id):
         cur = db.cursor(conn)
         note_id = db.insert_id(
             cur, 'project_notes',
-            ('project_id', 'body', 'created_at', 'updated_at'),
-            (project_id, body, now, now),
+            ('project_id', 'body', 'source_id', 'created_at', 'updated_at'),
+            (project_id, body, source_id, now, now),
         )
         for s in stored:
             db.insert_id(
@@ -1465,16 +1469,25 @@ def create_note(project_id):
 
 @app.route('/api/notes/<int:note_id>', methods=['PATCH'])
 def update_note(note_id):
-    body = (request.get_json(force=True).get('body') or '').strip()
+    data = request.get_json(force=True)
+    sets   = [f'body = {db.PH}', f'updated_at = {db.PH}']
+    params = [(data.get('body') or '').strip(), datetime.now().isoformat()]
+    # Only touch the source when the caller actually sent one, so editing the
+    # text alone can't silently clear it.
+    if 'source_id' in data:
+        sets.append(f'source_id = {db.PH}')
+        params.append(_opt_int(data, 'source_id'))
+
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
-            f'UPDATE project_notes SET body = {db.PH}, updated_at = {db.PH} WHERE id = {db.PH}',
-            (body, datetime.now().isoformat(), note_id),
+            f'UPDATE project_notes SET {", ".join(sets)} WHERE id = {db.PH}',
+            params + [note_id],
         )
         cur.execute(
-            f'SELECT id, project_id, body, created_at, updated_at FROM project_notes '
-            f'WHERE id = {db.PH}', (note_id,),
+            f'SELECT n.id, n.project_id, n.body, n.source_id, s.name AS source_name, '
+            f'n.created_at, n.updated_at FROM project_notes n '
+            f'LEFT JOIN sources s ON n.source_id = s.id WHERE n.id = {db.PH}', (note_id,),
         )
         row = db.to_dict(cur.fetchone())
     if not row:
@@ -1733,21 +1746,29 @@ def create_model_version(project_id):
     # If the workbook is stamped for a different project, say so rather than
     # quietly filing someone's model in the wrong place.
     tagged = xlsxmeta.read_project_id(raw)
-    if tagged and tagged != project_id and request.form.get('force') != 'true':
+    retagged_from = None
+    if tagged and tagged != project_id:
         other = _project_exists(tagged)
-        if other:
+        if other and request.form.get('force') != 'true':
             return jsonify({
                 'error': f'This workbook is tagged as the model for "{other["name"]}".',
                 'tagged_project': {'id': other['id'], 'name': other['name']},
                 'needs_confirm': True,
             }), 409
+        if other:
+            retagged_from = {'id': other['id'], 'name': other['name']}
 
     return _add_model_version(project, raw, upload.filename,
-                              (request.form.get('label') or '').strip() or None)
+                              (request.form.get('label') or '').strip() or None,
+                              retagged_from=retagged_from)
 
 
-def _add_model_version(project, raw, filename, label):
-    """Claim the next version, stamp the workbook, store it, record the row."""
+def _add_model_version(project, raw, filename, label, retagged_from=None):
+    """Claim the next version, stamp the workbook, store it, record the row.
+
+    `retagged_from` names the project the file used to claim, when the user has
+    deliberately overridden its tag — reported back so the UI can say so.
+    """
     project_id = project['id']
 
     # Claim the version number before uploading, so it can go in the object name
@@ -1800,6 +1821,7 @@ def _add_model_version(project, raw, filename, label):
         'filename': info['filename'], 'size_bytes': info['size_bytes'],
         'created_at': now, 'project': {'id': project_id, 'name': project['name']},
         'tagged': xlsxmeta.is_supported(filename),
+        'retagged_from': retagged_from,
     }), 201
 
 
@@ -1820,7 +1842,17 @@ def upload_model_by_tag():
     if oversize := _check_size(raw, upload.filename):
         return oversize
 
-    project_id = _opt_int(request.form, 'project_id') or xlsxmeta.read_project_id(raw)
+    # An explicit project_id is a deliberate override — reusing an old model as
+    # the template for a different name, say. The file gets re-tagged to match.
+    chosen    = _opt_int(request.form, 'project_id')
+    tagged_id = xlsxmeta.read_project_id(raw)
+    retagged_from = None
+    if chosen and tagged_id and chosen != tagged_id:
+        previous = _project_exists(tagged_id)
+        if previous:
+            retagged_from = {'id': previous['id'], 'name': previous['name']}
+
+    project_id = chosen or tagged_id
     project = _project_exists(project_id) if project_id else None
 
     if not project:
@@ -1836,7 +1868,8 @@ def upload_model_by_tag():
         }), 409
 
     return _add_model_version(project, raw, upload.filename,
-                              (request.form.get('label') or '').strip() or None)
+                              (request.form.get('label') or '').strip() or None,
+                              retagged_from=retagged_from)
 
 
 @app.route('/api/model-versions/<int:version_id>', methods=['DELETE'])
