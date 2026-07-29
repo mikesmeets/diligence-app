@@ -1216,6 +1216,59 @@ def _trailing_capex(t):
     return None
 
 
+def _consensus_from_fmp(ticker, price, mcap, ev, trailing):
+    """Forward consensus with the multiples and margins Yahoo can't reach.
+
+    Returns None when FMP has no key or nothing useful, so the caller can fall
+    back to Yahoo's thinner EPS/revenue-only view.
+    """
+    if not fmp.enabled():
+        return None
+    try:
+        rows = fmp.analyst_estimates(ticker, limit=5)
+    except Exception as exc:
+        app.logger.info('FMP estimates unavailable for %s: %s', ticker, exc)
+        return None
+    if not rows:
+        return None
+
+    def growth(now, before):
+        if now is None or not before:
+            return None
+        return (now / before - 1) * 100
+
+    def ratio(num, den):
+        return (num / den) if num is not None and den else None
+
+    periods, previous = [], trailing
+    for row in rows:
+        rev, ebitda, ebit, eps = row['revenue'], row['ebitda'], row['ebit'], row['eps']
+        periods.append({
+            'label':     row['label'],
+            'date':      row['date'],
+            'analysts':  row['analysts'],
+            'revenue':   rev,
+            'ebitda':    ebitda,
+            'ebit':      ebit,
+            'eps':       eps,
+            # Multiples hold today's price and EV against each forward year.
+            'pe':          ratio(price, eps),
+            'ev_ebitda':   ratio(ev, ebitda),
+            'ev_ebit':     ratio(ev, ebit),
+            'price_sales': ratio(mcap, rev),
+            'ebitda_margin': (lambda v: v * 100 if v is not None else None)(ratio(ebitda, rev)),
+            'ebit_margin':   (lambda v: v * 100 if v is not None else None)(ratio(ebit, rev)),
+            # First year grows off trailing actuals; later years off the year before.
+            'revenue_growth': growth(rev,    previous.get('revenue')),
+            'ebitda_growth':  growth(ebitda, previous.get('ebitda')),
+            'ebit_growth':    growth(ebit,   previous.get('ebit')),
+            'eps_growth':     growth(eps,    previous.get('eps')),
+        })
+        previous = {'revenue': rev, 'ebitda': ebitda, 'ebit': ebit, 'eps': eps}
+
+    return {'source': 'FMP', 'periods': periods}
+
+
 def _consensus(t, price, mcap):
     """Forward EPS/revenue estimates — the only forward data Yahoo provides."""
     rows = []
@@ -1242,15 +1295,15 @@ def _consensus(t, price, mcap):
         if eps is None and rev is None:
             continue
         rows.append({
-            'label':        label,
-            'eps':          eps,
-            'eps_growth':   eps_growth,
-            'revenue':      rev,
-            'rev_growth':   rev_growth,
-            'pe':           (price / eps) if price and eps else None,
-            'price_sales':  (mcap / rev)  if mcap  and rev else None,
+            'label':          label,
+            'eps':            eps,
+            'eps_growth':     eps_growth * 100 if eps_growth is not None else None,
+            'revenue':        rev,
+            'revenue_growth': rev_growth * 100 if rev_growth is not None else None,
+            'pe':             (price / eps) if price and eps else None,
+            'price_sales':    (mcap / rev)  if mcap  and rev else None,
         })
-    return rows
+    return {'source': 'Yahoo', 'periods': rows} if rows else {'source': 'Yahoo', 'periods': []}
 
 
 def _build_tearsheet(ticker):
@@ -1324,7 +1377,13 @@ def _build_tearsheet(ticker):
             'revenue':  (lambda v: v * 100 if v is not None else None)(_num(info.get('revenueGrowth'))),
             'earnings': (lambda v: v * 100 if v is not None else None)(_num(info.get('earningsGrowth'))),
         },
-        'consensus': _consensus(t, price, mcap),
+        'consensus': (
+            _consensus_from_fmp(ticker, price, mcap, ev, {
+                'revenue': revenue, 'ebitda': ebitda,
+                'ebit': _num(info.get('ebit')), 'eps': _num(info.get('trailingEps')),
+            })
+            or _consensus(t, price, mcap)
+        ),
         'analyst': {
             'target':         _num(info.get('targetMeanPrice')),
             'recommendation': info.get('recommendationKey'),
@@ -2069,14 +2128,25 @@ def _ai_context(project):
     lines.append(block('Valuation (trailing):', t['valuation']))
     lines.append(block('Margins (trailing, %):', t['margins']))
     lines.append(block('Growth (trailing, %):', t['growth']))
-    for row in t.get('consensus') or []:
-        lines.append(block(f"Consensus — {row['label']}:",
-                           {k: v for k, v in row.items() if k != 'label'}))
-    lines.append(
-        '\nNote: Yahoo publishes forward estimates for EPS and revenue only, two periods '
-        'out. Forward EBITDA, EBIT and FCF are not available, so every margin and '
-        'leverage figure above is trailing.'
-    )
+    consensus = t.get('consensus') or {}
+    for row in consensus.get('periods') or []:
+        lines.append(block(
+            f"Consensus — {row.get('label')} (per {consensus.get('source')}):",
+            {k: v for k, v in row.items() if k not in ('label', 'date')},
+        ))
+
+    if consensus.get('source') == 'FMP':
+        lines.append(
+            '\nNote: forward multiples above hold the current price and EV against each '
+            'estimate year. Consensus free cash flow is not published, so FCF yield is '
+            'trailing.'
+        )
+    else:
+        lines.append(
+            '\nNote: forward estimates cover EPS and revenue only, two periods out. '
+            'Forward EBITDA, EBIT and FCF are unavailable, so every margin and leverage '
+            'figure above is trailing.'
+        )
     return '\n'.join(l for l in lines if l)
 
 

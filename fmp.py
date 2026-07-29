@@ -86,6 +86,62 @@ def get(path, legacy=False, **params):
     return data
 
 
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
+def _pick(row, *names):
+    """First present value among several candidate field names.
+
+    FMP has shipped both `estimatedEbitdaAvg` and `ebitdaAvg` shapes depending
+    on endpoint vintage, so match on any of them rather than pinning one.
+    """
+    for name in names:
+        if name in row:
+            value = _num(row[name])
+            if value is not None:
+                return value
+    return None
+
+
+def analyst_estimates(symbol, limit=4):
+    """Forward annual consensus: revenue, EBITDA, EBIT, net income, EPS.
+
+    This is the reason FMP is here — Yahoo publishes EPS and revenue only, two
+    periods out, which leaves forward EV/EBITDA, EV/EBIT and forward margins
+    uncomputable.
+    """
+    rows = get('analyst-estimates', symbol=symbol.upper(), period='annual', limit=limit)
+    if not isinstance(rows, list):
+        return []
+
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        date = str(row.get('date') or '')[:10]
+        out.append({
+            'date':       date,
+            'label':      f'FY{date[2:4]}' if len(date) >= 4 else (date or '—'),
+            'revenue':    _pick(row, 'estimatedRevenueAvg', 'revenueAvg', 'revenue'),
+            'ebitda':     _pick(row, 'estimatedEbitdaAvg', 'ebitdaAvg', 'ebitda'),
+            'ebit':       _pick(row, 'estimatedEbitAvg', 'ebitAvg', 'ebit'),
+            'net_income': _pick(row, 'estimatedNetIncomeAvg', 'netIncomeAvg', 'netIncome'),
+            'eps':        _pick(row, 'estimatedEpsAvg', 'epsAvg', 'eps'),
+            'analysts':   _pick(row, 'numberAnalystsEstimatedEps',
+                                'numberAnalystEstimatedRevenue', 'numAnalystsEps'),
+        })
+
+    # Oldest first, so year-on-year growth reads left to right.
+    out = [r for r in out if r['date']]
+    out.sort(key=lambda r: r['date'])
+    return out
+
+
 def test():
     """Validate the key with the cheapest call available."""
     data = get('profile', symbol='AAPL')

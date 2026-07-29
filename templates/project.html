@@ -864,17 +864,24 @@ function drawTearsheet(d) {
     ${row('Debt / Equity',  cr.debt_to_equity == null ? null : `${cr.debt_to_equity.toFixed(0)}%`)}
   `;
 
-  // Consensus: EPS and revenue only, two periods out — that's the whole of
-  // what Yahoo publishes forward. Everything else here is trailing.
-  const consCols = cons.map(x => `<th class="text-right font-semibold pb-1 px-1">${x.label}</th>`).join('');
-  const consRow  = (label, fn) => `
-    <tr>
-      <td class="py-0.5 text-gray-600">${label}</td>
-      ${cons.map(x => {
+  // Consensus. With an FMP key this carries EBITDA and EBIT, so the forward
+  // multiples and margins are real. Without one it falls back to Yahoo, which
+  // publishes EPS and revenue only — those rows then read as blanks.
+  const periods = cons.periods || [];
+  const fromFmp = cons.source === 'FMP';
+
+  const consCols = periods.map(x => `<th class="text-right font-semibold pb-1 px-1">${escHtml(x.label)}</th>`).join('');
+  const consRow  = (label, fn, opts = {}) => `
+    <tr class="${opts.sub ? '' : 'border-t border-gray-50'}">
+      <td class="py-0.5 ${opts.sub ? 'pl-3 text-gray-500' : 'text-gray-600'}">${label}</td>
+      ${periods.map(x => {
         const val = fn(x);
         return `<td class="text-right py-0.5 px-1 font-mono ${val == null ? 'text-gray-300' : 'text-gray-900'}">${val ?? '—'}</td>`;
       }).join('')}
     </tr>`;
+  const consHead = (label) => `
+    <tr><td colspan="${periods.length + 1}"
+      class="pt-3 pb-1 text-xs font-semibold text-gray-700 underline">${label}</td></tr>`;
 
   const right = `
     <div class="ts-head">Valuation <span class="font-normal">(trailing)</span></div>
@@ -894,26 +901,46 @@ function drawTearsheet(d) {
     ${row('Revenue growth',   signedPct(g.revenue))}
     ${row('Earnings growth',  signedPct(g.earnings))}
 
-    <div class="ts-head mt-5">Consensus</div>
-    ${cons.length === 0
+    <div class="ts-head mt-5">Consensus
+      <span class="font-normal text-[10px] uppercase tracking-wide">${fromFmp ? 'FMP' : 'Yahoo'}</span>
+    </div>
+    ${periods.length === 0
       ? '<p class="text-xs text-gray-400 py-2">No estimates available.</p>'
       : `<table class="w-full text-[13px]">
            <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
              <th class="text-left font-semibold pb-1">&nbsp;</th>${consCols}
            </tr></thead>
            <tbody>
-             ${consRow('EPS',           x => x.eps == null ? null : `$${x.eps.toFixed(2)}`)}
-             ${consRow('EPS growth',    x => signedPct(x.eps_growth == null ? null : x.eps_growth * 100))}
-             ${consRow('Revenue',       x => fmtBig(x.revenue))}
-             ${consRow('Revenue growth',x => signedPct(x.rev_growth == null ? null : x.rev_growth * 100))}
-             ${consRow('P/E',           x => fmtX(x.pe))}
-             ${consRow('Price/Sales',   x => fmtX(x.price_sales))}
+             ${consHead('Valuation')}
+             ${consRow('P/E',         x => fmtX(x.pe), { sub: true })}
+             ${consRow('EV/EBITDA',   x => fmtX(x.ev_ebitda), { sub: true })}
+             ${consRow('EV/EBIT',     x => fmtX(x.ev_ebit), { sub: true })}
+             ${consRow('Price/Sales', x => fmtX(x.price_sales), { sub: true })}
+
+             ${consHead('Growth')}
+             ${consRow('Revenue', x => signedPct(x.revenue_growth), { sub: true })}
+             ${consRow('EBITDA',  x => signedPct(x.ebitda_growth), { sub: true })}
+             ${consRow('EBIT',    x => signedPct(x.ebit_growth), { sub: true })}
+             ${consRow('EPS',     x => signedPct(x.eps_growth), { sub: true })}
+
+             ${consHead('Margins')}
+             ${consRow('EBITDA', x => fmtPct(x.ebitda_margin), { sub: true })}
+             ${consRow('EBIT',   x => fmtPct(x.ebit_margin), { sub: true })}
+
+             ${consHead('Estimates')}
+             ${consRow('Revenue', x => fmtBig(x.revenue), { sub: true })}
+             ${consRow('EBITDA',  x => fmtBig(x.ebitda), { sub: true })}
+             ${consRow('EBIT',    x => fmtBig(x.ebit), { sub: true })}
+             ${consRow('EPS',     x => x.eps == null ? null : `$${x.eps.toFixed(2)}`, { sub: true })}
+             ${consRow('Analysts',x => x.analysts == null ? null : String(Math.round(x.analysts)), { sub: true })}
            </tbody>
          </table>
          <p class="text-[11px] text-gray-300 mt-2 leading-snug">
-           Yahoo publishes forward estimates for EPS and revenue only, two periods out.
-           Forward EBITDA, EBIT and FCF are not available, so EV/EBITDA, FCF yield and
-           margins above are trailing.
+           ${fromFmp
+             ? 'Forward multiples hold the current price and EV against each estimate year. '
+               + 'FCF yield stays trailing — consensus free cash flow is not published.'
+             : 'Yahoo publishes forward EPS and revenue only, so the EBITDA, EBIT and margin '
+               + 'rows are blank. Add an FMP key on the Admin page to fill them in.'}
          </p>`}
   `;
 
