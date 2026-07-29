@@ -86,12 +86,18 @@
       <div class="flex gap-2 mt-2 flex-wrap">
         <button onclick="saveFmpKey()"
           class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save key</button>
+        <input id="fmp-test-symbol" placeholder="AAPL" autocomplete="off" spellcheck="false"
+          class="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-xs font-mono uppercase outline-none focus:ring-2 focus:ring-blue-500" />
         <button id="fmp-test" onclick="testFmp()"
           class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Test connection</button>
         <button onclick="clearFmpKey()" id="fmp-clear-btn"
           class="hidden px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors">Remove stored key</button>
       </div>
       <p id="fmp-test-result" class="text-xs mt-2"></p>
+      <p class="text-xs text-gray-400 mt-1 leading-relaxed">
+        FMP restricts coverage by ticker as well as by endpoint, so test the ticker you
+        actually care about — a pass on AAPL says nothing about the rest.
+      </p>
     </div>
 
     <p class="text-xs text-gray-400 mt-3 leading-relaxed">
@@ -255,18 +261,19 @@ async function testFmp() {
   out.className = 'text-xs mt-2 text-gray-400';
   btn.disabled = true;
   try {
-    const res  = await fetch('/api/fmp/test', { method: 'POST' });
+    const sym  = (document.getElementById('fmp-test-symbol').value || 'AAPL').trim().toUpperCase();
+    const res  = await fetch(`/api/fmp/test?symbol=${encodeURIComponent(sym)}`, { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
       const p = data.sample.profile || {};
       const e = data.sample.estimates || {};
       const line1 = `✓ Key works — ${p.name || p.symbol}${p.price != null ? ` at ${p.price} ${p.currency || ''}` : ''}`.trim();
-      // The tearsheet needs analyst estimates specifically, and those sit behind
-      // a paid FMP tier — so report that separately from the key being valid.
+      // Estimates fail independently of the key, and FMP gates them per symbol as
+      // well as per endpoint — so name the symbol, or a pass reads as universal.
       const line2 = e.ok
-        ? `✓ Analyst estimates available — ${e.detail}`
-        : `✗ Analyst estimates unavailable — ${e.detail || 'unknown reason'}. `
-          + `The Consensus block will keep using Yahoo.`;
+        ? `✓ Analyst estimates available for ${sym} — ${e.detail}`
+        : `✗ Analyst estimates unavailable for ${sym} — ${e.detail || 'unknown reason'} `
+          + `The Consensus block will use Yahoo for ${sym}.`;
       out.innerHTML = `${line1}<br>${line2}`;
       out.className = `text-xs mt-2 ${e.ok ? 'text-green-600' : 'text-amber-600'}`;
     } else {

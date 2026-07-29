@@ -1427,6 +1427,10 @@ def _build_tearsheet(ticker):
 @app.route('/api/market/<ticker>/tearsheet')
 def market_tearsheet(ticker):
     ticker = ticker.strip().upper()
+    # ?refresh=1 skips the 15-minute cache, for when something upstream has
+    # changed — a new FMP key, say — and waiting it out isn't obvious.
+    if request.args.get('refresh'):
+        _cache.pop(f'tear:{ticker}', None)
     try:
         data = _cached(f'tear:{ticker}', 900, lambda: _build_tearsheet(ticker))
     except Exception as exc:
@@ -2489,8 +2493,9 @@ def save_settings():
 @app.route('/api/fmp/test', methods=['POST'])
 def test_fmp_key():
     """Prove the stored key actually works, rather than only that it's present."""
+    symbol = (request.args.get('symbol') or request.form.get('symbol') or 'AAPL')
     try:
-        return jsonify({'ok': True, 'sample': fmp.test()})
+        return jsonify({'ok': True, 'sample': fmp.test(symbol)})
     except fmp.NotConfigured as exc:
         return jsonify({'error': str(exc)}), 503
     except fmp.FMPError as exc:

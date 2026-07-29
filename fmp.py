@@ -75,6 +75,14 @@ def get(path, legacy=False, **params):
             f'FMP refused this endpoint (403). The key is likely fine but "{path}" '
             f'is not included in your plan.'
         )
+    if resp.status_code == 402:
+        # FMP gates coverage by symbol as well as by endpoint: the same call can
+        # succeed for one ticker and be refused for another on the same plan.
+        symbol = params.get('symbol') or 'this symbol'
+        raise FMPError(
+            f'Your FMP plan does not cover {symbol} on this endpoint (402). The key '
+            f'and endpoint are fine — the symbol is outside the plan\'s coverage.'
+        )
     if resp.status_code == 429:
         raise FMPError('FMP rate limit reached — wait a moment and try again.')
     if resp.status_code >= 400:
@@ -149,14 +157,16 @@ def analyst_estimates(symbol, limit=4):
     return out
 
 
-def test():
-    """Check the key, and separately whether the plan covers analyst estimates.
+def test(symbol='AAPL'):
+    """Check the key, and whether the plan covers estimates for `symbol`.
 
-    They fail independently: analyst estimates sit behind a paid tier on FMP, so
-    a perfectly valid key can authenticate and still not answer the one call the
-    tearsheet needs.
+    These fail independently, and coverage is per-symbol as well as per-endpoint
+    — so a key can authenticate, the endpoint can be in the plan, and the call
+    can still be refused for the particular ticker you care about. Test the
+    ticker you actually hold rather than trusting a default.
     """
-    data = get('profile', symbol='AAPL')
+    symbol = (symbol or 'AAPL').strip().upper()
+    data = get('profile', symbol=symbol)
     row = data[0] if isinstance(data, list) and data else data
     if not isinstance(row, dict) or not (row.get('symbol') or row.get('companyName')):
         raise FMPError('The key worked but the response was not what was expected.')
@@ -170,17 +180,20 @@ def test():
     }
 
     try:
-        rows = analyst_estimates('AAPL', limit=2)
+        rows = analyst_estimates(symbol, limit=2)
     except FMPError as exc:
-        return {'profile': profile, 'estimates': {'ok': False, 'detail': str(exc)}}
+        return {'symbol': symbol, 'profile': profile,
+                'estimates': {'ok': False, 'detail': str(exc)}}
 
     if not rows:
-        return {'profile': profile,
-                'estimates': {'ok': False, 'detail': 'The endpoint answered but returned no rows.'}}
+        return {'symbol': symbol, 'profile': profile,
+                'estimates': {'ok': False,
+                              'detail': f'The endpoint answered but returned no rows for {symbol}.'}}
 
     got = [k for k in ('revenue', 'ebitda', 'ebit', 'eps') if rows[-1].get(k) is not None]
     missing = [k for k in ('revenue', 'ebitda', 'ebit', 'eps') if rows[-1].get(k) is None]
     return {
+        'symbol': symbol,
         'profile': profile,
         'estimates': {
             'ok': bool(got),
