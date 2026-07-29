@@ -32,6 +32,20 @@
 
 <!-- ── Board ──────────────────────────────────────────────────────────── -->
 <main class="max-w-screen-2xl mx-auto px-6 py-8">
+
+  <!-- Drop a model here and its own metadata says which project it belongs to -->
+  <div id="dropzone"
+    class="mb-6 border-2 border-dashed border-gray-200 rounded-xl px-5 py-4 text-center transition-colors">
+    <p class="text-sm text-gray-400">
+      Drop an Excel model here — if it came from this app it files itself under the right project.
+      <label class="text-blue-600 hover:text-blue-800 cursor-pointer">
+        Or choose a file<input type="file" class="hidden" accept=".xlsx,.xlsm,.xls,.csv"
+          onchange="sendModel(this.files[0]); this.value='';" />
+      </label>
+    </p>
+    <p id="drop-status" class="text-xs mt-1"></p>
+  </div>
+
   <div id="board" class="flex gap-4 overflow-x-auto pb-4 items-start"></div>
   <div id="empty-state" class="hidden text-center py-24 text-gray-400">
     <div class="text-5xl mb-4">🔬</div>
@@ -445,6 +459,72 @@ async function submitProject(e) {
     btn.disabled = false;
     btn.textContent = editingId ? 'Save Changes' : 'Create Project';
   }
+}
+
+// ── Drop a model, let the file say where it goes ──────────────────────────
+
+const zone = document.getElementById('dropzone');
+const dropStatus = document.getElementById('drop-status');
+
+function setDropStatus(msg, tone = 'gray') {
+  dropStatus.textContent = msg;
+  dropStatus.className = `text-xs mt-1 text-${tone}-500`;
+}
+
+['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, (e) => {
+  e.preventDefault();
+  zone.classList.add('border-blue-400', 'bg-blue-50');
+}));
+['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, (e) => {
+  e.preventDefault();
+  zone.classList.remove('border-blue-400', 'bg-blue-50');
+}));
+zone.addEventListener('drop', (e) => {
+  const file = e.dataTransfer.files[0];
+  if (file) sendModel(file);
+});
+
+async function sendModel(file, projectId = null) {
+  if (!file) return;
+  setDropStatus(`Uploading ${file.name}…`);
+
+  const fd = new FormData();
+  fd.append('file', file);
+  if (projectId) fd.append('project_id', projectId);
+
+  let res;
+  try {
+    res = await fetch('/api/model/upload', { method: 'POST', body: fd });
+  } catch (e) {
+    setDropStatus('Upload failed — check your connection.', 'red');
+    return;
+  }
+
+  if (res.ok) {
+    const saved = await res.json();
+    setDropStatus(
+      `Filed as v${saved.version} of ${saved.project.name}` +
+      (saved.tagged ? ' — tagged, so next time it lands here on its own.' : '.'),
+      'green');
+    return;
+  }
+
+  const body = await res.text();
+  let payload = null;
+  try { payload = JSON.parse(body); } catch (e) { /* not JSON */ }
+
+  // Untagged file (anything made before this, or outside the app) — ask once,
+  // then it carries the tag from here on.
+  if (payload && payload.needs_project) {
+    const list = payload.projects.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+    const pick = prompt(`${payload.error}\n\n${list}\n\nEnter a number:`);
+    if (pick === null) { setDropStatus(''); return; }
+    const chosen = payload.projects[parseInt(pick, 10) - 1];
+    if (!chosen) { setDropStatus('No project chosen.', 'amber'); return; }
+    return sendModel(file, chosen.id);
+  }
+
+  setDropStatus((payload && payload.error) || `Server error ${res.status}.`, 'red');
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────

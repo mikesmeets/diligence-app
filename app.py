@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import ai
 import db
 import storage
+import xlsxmeta
 
 app = Flask(__name__)
 
@@ -1330,6 +1331,24 @@ def _project_exists(project_id):
         return db.to_dict(cur.fetchone())
 
 
+def _check_size(raw, filename):
+    if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
+        return (jsonify({
+            'error': f'"{filename}" exceeds the {MAX_UPLOAD_MB} MB limit '
+                     f'({len(raw) / 1024 / 1024:.1f} MB).'
+        }), 413)
+    return None
+
+
+def _store_bytes(raw, filename, parts=None, rename=None):
+    """Put bytes in the bucket. Returns (info, None) or (None, response)."""
+    try:
+        key = storage.upload(raw, rename or filename, parts=parts)
+    except Exception as exc:
+        return None, (jsonify({'error': f'Upload failed: {exc}'}), 502)
+    return {'filename': filename, 'object_key': key, 'size_bytes': len(raw)}, None
+
+
 def _store_upload(file_obj, parts=None, rename=None):
     """Upload one file to the bucket. Returns (info, None) or (None, response).
 
@@ -1339,16 +1358,9 @@ def _store_upload(file_obj, parts=None, rename=None):
     if not file_obj or not file_obj.filename:
         return None, (jsonify({'error': 'No file supplied'}), 400)
     raw = file_obj.read()
-    if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
-        return None, (jsonify({
-            'error': f'"{file_obj.filename}" exceeds the {MAX_UPLOAD_MB} MB limit '
-                     f'({len(raw) / 1024 / 1024:.1f} MB).'
-        }), 413)
-    try:
-        key = storage.upload(raw, rename or file_obj.filename, parts=parts)
-    except Exception as exc:
-        return None, (jsonify({'error': f'Upload failed: {exc}'}), 502)
-    return {'filename': file_obj.filename, 'object_key': key, 'size_bytes': len(raw)}, None
+    if oversize := _check_size(raw, file_obj.filename):
+        return None, oversize
+    return _store_bytes(raw, file_obj.filename, parts=parts, rename=rename)
 
 
 def _project_folder(project):
@@ -1711,10 +1723,37 @@ def create_model_version(project_id):
     if not project:
         return jsonify({'error': 'Project not found'}), 404
 
-    # Claim the version number before uploading, so it can go in the object name.
-    # Numbers are issued from a high-water mark, never recomputed from the live
-    # rows — deleting v3 must not hand "v3" to a later file. A failed upload
-    # burns a number, which is the right trade for never reusing one.
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return jsonify({'error': 'No file supplied'}), 400
+    raw = upload.read()
+    if oversize := _check_size(raw, upload.filename):
+        return oversize
+
+    # If the workbook is stamped for a different project, say so rather than
+    # quietly filing someone's model in the wrong place.
+    tagged = xlsxmeta.read_project_id(raw)
+    if tagged and tagged != project_id and request.form.get('force') != 'true':
+        other = _project_exists(tagged)
+        if other:
+            return jsonify({
+                'error': f'This workbook is tagged as the model for "{other["name"]}".',
+                'tagged_project': {'id': other['id'], 'name': other['name']},
+                'needs_confirm': True,
+            }), 409
+
+    return _add_model_version(project, raw, upload.filename,
+                              (request.form.get('label') or '').strip() or None)
+
+
+def _add_model_version(project, raw, filename, label):
+    """Claim the next version, stamp the workbook, store it, record the row."""
+    project_id = project['id']
+
+    # Claim the version number before uploading, so it can go in the object name
+    # and in the file's own metadata. Numbers are issued from a high-water mark,
+    # never recomputed from live rows — deleting v3 must not hand "v3" to a later
+    # file. A failed upload burns a number: the right trade for never reusing one.
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
@@ -1734,18 +1773,19 @@ def create_model_version(project_id):
             (version, project_id),
         )
 
-    upload = request.files.get('file')
-    original = upload.filename if upload else ''
-    info, err = _store_upload(
-        upload, parts=_project_folder(project) + ['model'],
+    # Stamp the workbook so a later re-upload pairs itself. Leaves non-Excel
+    # files untouched.
+    stamped = xlsxmeta.stamp_for_project(raw, project_id, project['name'], version)
+
+    info, err = _store_bytes(
+        stamped, filename, parts=_project_folder(project) + ['model'],
         # v3 AAP_model.xlsx — sorts and reads correctly in a bucket listing.
-        rename=f'v{version} {original}' if original else None,
+        rename=f'v{version} {filename}',
     )
     if err:
         return err
 
-    now   = datetime.now().isoformat()
-    label = (request.form.get('label') or '').strip() or None
+    now = datetime.now().isoformat()
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         vid = db.insert_id(
@@ -1757,8 +1797,46 @@ def create_model_version(project_id):
         )
     return jsonify({
         'id': vid, 'version': version, 'label': label,
-        'filename': info['filename'], 'size_bytes': info['size_bytes'], 'created_at': now,
+        'filename': info['filename'], 'size_bytes': info['size_bytes'],
+        'created_at': now, 'project': {'id': project_id, 'name': project['name']},
+        'tagged': xlsxmeta.is_supported(filename),
     }), 201
+
+
+@app.route('/api/model/upload', methods=['POST'])
+def upload_model_by_tag():
+    """Drop a workbook anywhere; the file's own metadata says where it belongs.
+
+    Falls back to asking when the file carries no tag — which is every model
+    that predates this, and any built outside the app.
+    """
+    if missing := _bucket_missing():
+        return missing
+
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return jsonify({'error': 'No file supplied'}), 400
+    raw = upload.read()
+    if oversize := _check_size(raw, upload.filename):
+        return oversize
+
+    project_id = _opt_int(request.form, 'project_id') or xlsxmeta.read_project_id(raw)
+    project = _project_exists(project_id) if project_id else None
+
+    if not project:
+        with db.get_conn() as conn:
+            cur = db.cursor(conn)
+            cur.execute('SELECT id, name FROM projects ORDER BY name')
+            choices = db.to_dicts(cur.fetchall())
+        return jsonify({
+            'error': 'This file isn\'t tagged for a project yet — pick one and it will be '
+                     'tagged from now on.',
+            'needs_project': True,
+            'projects': choices,
+        }), 409
+
+    return _add_model_version(project, raw, upload.filename,
+                              (request.form.get('label') or '').strip() or None)
 
 
 @app.route('/api/model-versions/<int:version_id>', methods=['DELETE'])
