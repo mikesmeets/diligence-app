@@ -27,6 +27,22 @@ db.init()
 db.migrate()
 
 
+@app.after_request
+def no_stale_pages(response):
+    """Keep the browser from running last deploy's JavaScript.
+
+    The page scripts are inline in the templates, so a cached HTML page means
+    cached code. When that code and the server disagree about a payload shape,
+    things fail in ways that look like data problems rather than staleness.
+    """
+    ctype = (response.headers.get('Content-Type') or '')
+    if ctype.startswith('text/html'):
+        response.headers['Cache-Control'] = 'no-store, must-revalidate'
+    elif request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-cache'   # revalidate, allow 304
+    return response
+
+
 @app.errorhandler(Exception)
 def handle_unexpected(exc):
     """Return the actual failure as JSON on API routes.
@@ -1276,7 +1292,10 @@ def _consensus(t, price, mcap):
         eps_est = t.earnings_estimate
         rev_est = t.revenue_estimate
     except Exception:
-        return rows
+        # yfinance throws here often enough to matter. Return the same shape as
+        # the success path — a bare list would leave the client with nothing to
+        # read `periods` off, and the block would silently render empty.
+        return {'source': 'Yahoo', 'periods': []}
 
     for key, label in (('0y', 'Current FY'), ('+1y', 'Next FY')):
         eps = eps_growth = rev = rev_growth = None

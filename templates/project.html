@@ -867,8 +867,10 @@ function drawTearsheet(d) {
   // Consensus. With an FMP key this carries EBITDA and EBIT, so the forward
   // multiples and margins are real. Without one it falls back to Yahoo, which
   // publishes EPS and revenue only — those rows then read as blanks.
-  const periods = cons.periods || [];
-  const fromFmp = cons.source === 'FMP';
+  // Tolerate the older bare-list payload as well as {source, periods}, so a
+  // page held over from a previous deploy still renders instead of blanking.
+  const periods = Array.isArray(cons) ? cons : (cons.periods || []);
+  const fromFmp = !Array.isArray(cons) && cons.source === 'FMP';
 
   const consCols = periods.map(x => `<th class="text-right font-semibold pb-1 px-1">${escHtml(x.label)}</th>`).join('');
   const consRow  = (label, fn, opts = {}) => `
