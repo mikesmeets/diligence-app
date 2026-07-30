@@ -178,7 +178,10 @@ function renderTypes() {
     : types.map(t => `
       <li class="flex items-center justify-between px-3 py-2 text-sm">
         <span class="text-gray-800">${escHtml(t.name)}</span>
-        <button onclick="removeType(${t.id})" class="text-gray-300 hover:text-red-500 transition-colors text-xs ml-3">Delete</button>
+        <span class="flex gap-3 ml-3 flex-shrink-0">
+          <button onclick="renameType(${t.id})" class="text-gray-400 hover:text-blue-600 transition-colors text-xs">Rename</button>
+          <button onclick="removeType(${t.id})" class="text-gray-300 hover:text-red-500 transition-colors text-xs">Delete</button>
+        </span>
       </li>`).join('');
 }
 
@@ -192,6 +195,19 @@ async function addType() {
   });
   if (!res.ok) { alert(await apiError(res)); return; }
   input.value = '';
+  await load();
+  openTypes();
+}
+
+async function renameType(id) {
+  const current = (types.find(t => t.id === id) || {}).name || '';
+  const name    = prompt('Rename this type:', current);
+  if (name === null || !name.trim() || name.trim() === current) return;
+  const res = await fetch(`/api/doc-types/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
   await load();
   openTypes();
 }

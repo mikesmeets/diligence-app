@@ -405,10 +405,21 @@ def init():
         cur.execute(_CREATE_MODEL_VERSIONS)
 
         # Seed document types on a first run only, so deletions stick.
-        cur.execute('SELECT COUNT(*) AS n FROM doc_types')
-        if (to_dict(cur.fetchone()) or {}).get('n', 0) == 0:
-            for name in DEFAULT_DOC_TYPES:
-                cur.execute(f'INSERT INTO doc_types (name) VALUES ({PH})', (name,))
+        #
+        # Tracked by a flag rather than by counting rows: an empty table is a
+        # legitimate end state — delete every type and the count test would
+        # resurrect all seven on the next restart, which is the opposite of
+        # "yours to edit".
+        cur.execute(f'SELECT value FROM settings WHERE key = {PH}', ('doc_types_seeded',))
+        if not to_dict(cur.fetchone()):
+            cur.execute('SELECT COUNT(*) AS n FROM doc_types')
+            if (to_dict(cur.fetchone()) or {}).get('n', 0) == 0:
+                for name in DEFAULT_DOC_TYPES:
+                    cur.execute(f'INSERT INTO doc_types (name) VALUES ({PH})', (name,))
+            # Existing installs already hold their types; mark them seeded too so
+            # this never runs against them.
+            cur.execute(f'INSERT INTO settings (key, value) VALUES ({PH}, {PH})',
+                        ('doc_types_seeded', '1'))
 
 
 _MIGRATIONS = [

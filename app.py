@@ -1875,10 +1875,36 @@ def create_doc_type():
     return jsonify(row), 201
 
 
+@app.route('/api/doc-types/<int:type_id>', methods=['PATCH'])
+def rename_doc_type(type_id):
+    """Rename in place, so fixing a typo doesn't mean delete-and-recreate —
+    which would strip the type off every document already filed under it."""
+    name = (request.get_json(force=True).get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT id FROM doc_types WHERE name = {db.PH} AND id <> {db.PH}',
+                    (name, type_id))
+        if cur.fetchone():
+            return jsonify({'error': f'A type called "{name}" already exists'}), 409
+        cur.execute(f'UPDATE doc_types SET name = {db.PH} WHERE id = {db.PH}', (name, type_id))
+        cur.execute(f'SELECT id, name FROM doc_types WHERE id = {db.PH}', (type_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(row)
+
+
 @app.route('/api/doc-types/<int:type_id>', methods=['DELETE'])
 def delete_doc_type(type_id):
     with db.get_conn() as conn:
         cur = db.cursor(conn)
+        # Clear the type off any document using it first. Without this the
+        # document keeps a dangling id: it shows as untyped, and would silently
+        # adopt an unrelated label if that id were ever reissued.
+        cur.execute(f'UPDATE project_documents SET doc_type_id = NULL '
+                    f'WHERE doc_type_id = {db.PH}', (type_id,))
         cur.execute(f'DELETE FROM doc_types WHERE id = {db.PH}', (type_id,))
     return jsonify({'ok': True})
 
