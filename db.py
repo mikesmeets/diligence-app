@@ -251,6 +251,7 @@ _CREATE_NOTES = f"""
     CREATE TABLE IF NOT EXISTS project_notes (
         id         {_PK},
         project_id     INTEGER NOT NULL,
+        title          TEXT,
         body           TEXT    NOT NULL,
         note_source_id INTEGER,
         created_at     TEXT    NOT NULL,
@@ -429,6 +430,9 @@ _NOTE_MIGRATIONS = [
     # place so the one-time remap in app.py can read it, but nothing writes it.
     ('source_id',      'INTEGER'),
     ('note_source_id', 'INTEGER'),
+    # Optional one-line heading. Nullable: notes written before this existed
+    # have none, and a quick jotting doesn't need one.
+    ('title',          'TEXT'),
 ]
 
 _PROJECT_MIGRATIONS = [

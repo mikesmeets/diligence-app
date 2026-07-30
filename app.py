@@ -1591,8 +1591,8 @@ def _delete_keys(keys):
 
 def _notes_for(cur, project_id):
     cur.execute(
-        f'SELECT n.id, n.body, n.note_source_id, s.name AS source_name, s.kind AS source_kind, '
-        f'n.created_at, n.updated_at FROM project_notes n '
+        f'SELECT n.id, n.title, n.body, n.note_source_id, s.name AS source_name, '
+        f's.kind AS source_kind, n.created_at, n.updated_at FROM project_notes n '
         f'LEFT JOIN note_sources s ON n.note_source_id = s.id '
         f'WHERE n.project_id = {db.PH} ORDER BY n.created_at DESC, n.id DESC',
         (project_id,),
@@ -1628,11 +1628,12 @@ def create_note(project_id):
     else:
         data  = request.get_json(force=True)
         files = []
+    title     = (data.get('title') or '').strip()
     body      = (data.get('body') or '').strip()
     source_id = _opt_int(data, 'note_source_id')
 
-    if not body and not files:
-        return jsonify({'error': 'A note needs some text or a file'}), 400
+    if not title and not body and not files:
+        return jsonify({'error': 'A note needs a title, some text, or a file'}), 400
     if files and (missing := _bucket_missing()):
         return missing
 
@@ -1653,8 +1654,8 @@ def create_note(project_id):
         cur = db.cursor(conn)
         note_id = db.insert_id(
             cur, 'project_notes',
-            ('project_id', 'body', 'note_source_id', 'created_at', 'updated_at'),
-            (project_id, body, source_id, now, now),
+            ('project_id', 'title', 'body', 'note_source_id', 'created_at', 'updated_at'),
+            (project_id, title or None, body, source_id, now, now),
         )
         for s in stored:
             db.insert_id(
@@ -1676,6 +1677,10 @@ def update_note(note_id):
     if 'note_source_id' in data:
         sets.append(f'note_source_id = {db.PH}')
         params.append(_opt_int(data, 'note_source_id'))
+    # Same guard for the title: absent means "leave it", empty means "clear it".
+    if 'title' in data:
+        sets.append(f'title = {db.PH}')
+        params.append((data.get('title') or '').strip() or None)
 
     with db.get_conn() as conn:
         cur = db.cursor(conn)
@@ -1684,7 +1689,7 @@ def update_note(note_id):
             params + [note_id],
         )
         cur.execute(
-            f'SELECT n.id, n.project_id, n.body, n.note_source_id, s.name AS source_name, '
+            f'SELECT n.id, n.project_id, n.title, n.body, n.note_source_id, s.name AS source_name, '
             f's.kind AS source_kind, n.created_at, n.updated_at FROM project_notes n '
             f'LEFT JOIN note_sources s ON n.note_source_id = s.id WHERE n.id = {db.PH}', (note_id,),
         )
