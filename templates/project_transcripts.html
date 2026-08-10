@@ -13,6 +13,11 @@
       class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
       Upload
     </button>
+    <button id="redetect-btn" onclick="redetect()" {{ '' if storage_enabled else 'disabled' }}
+      title="Re-read the stored files for anything still missing"
+      class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60 transition-colors">
+      Re-detect
+    </button>
     <span id="upload-status" class="text-xs text-gray-400"></span>
   </div>
   <p class="text-xs text-gray-400 mt-3 leading-relaxed">
@@ -109,6 +114,32 @@ async function upload() {
   } finally {
     btn.disabled = false;
     setTimeout(() => { status.textContent = ''; }, 4000);
+  }
+}
+
+async function redetect() {
+  const btn    = document.getElementById('redetect-btn');
+  const status = document.getElementById('upload-status');
+  btn.disabled = true;
+  status.textContent = 'Reading the files…';
+  try {
+    const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/redetect`,
+                            { method: 'POST' });
+    if (!res.ok) { status.textContent = ''; alert(await apiError(res)); return; }
+    const out = await res.json();
+    items = out.transcripts;
+    status.textContent = out.updated
+      ? `Filled in ${out.updated}.`
+      : 'Nothing left to fill in.';
+    if ((out.unreadable || []).length) {
+      alert('Could not read these — set their quarter and date by hand:\n'
+            + out.unreadable.map(f => `• ${f.filename}: ${f.error}`).join('\n'));
+    }
+    render();
+    if (TICKER) loadChart();
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { status.textContent = ''; }, 5000);
   }
 }
 

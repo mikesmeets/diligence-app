@@ -14,6 +14,7 @@ import alphavantage
 import db
 import fmp
 import storage
+import transcripts as tx
 import xlsxmeta
 
 app = Flask(__name__)
@@ -2214,67 +2215,6 @@ def download_model_version(version_id):
 # calendar window would land on a weekend and silently measure nothing.
 REACTION_DAYS = 2
 
-_MONTHS = {m: i for i, m in enumerate(
-    ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
-     'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], start=1)}
-
-
-def _parse_transcript_name(filename):
-    """Best-effort quarter / fiscal year / call date out of a filename.
-
-    Transcript files arrive named every possible way, so this reads what it can
-    and leaves the rest null for the user to fill in. It is a head start, not a
-    source of truth — every field stays editable.
-    """
-    stem = re.sub(r'\.[A-Za-z0-9]{1,5}$', '', filename or '')
-    text = stem.replace('_', ' ').replace('.', ' ')
-    low  = text.lower()
-
-    quarter = None
-    if m := re.search(r'\bq([1-4])\b', low):
-        quarter = int(m.group(1))
-    elif m := re.search(r'\b([1-4])\s*q\b', low):
-        quarter = int(m.group(1))
-
-    call_date = None
-    if m := re.search(r'\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b', text):
-        y, mo, d = (int(g) for g in m.groups())
-        if 1 <= mo <= 12 and 1 <= d <= 31:
-            call_date = f'{y:04d}-{mo:02d}-{d:02d}'
-    if not call_date:
-        if m := re.search(r'\b([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(20\d{2})\b', low):
-            mo = _MONTHS.get(m.group(1))
-            if mo:
-                call_date = f'{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}'
-
-    # Fiscal year: an explicit FY beats a bare year, which beats the call date's
-    # year. A bare year sitting inside the call date must not be picked up twice.
-    fiscal_year = None
-    if m := re.search(r'\bfy\s*\'?(\d{2,4})\b', low):
-        raw = int(m.group(1))
-        fiscal_year = raw if raw > 100 else 2000 + raw
-    else:
-        masked = text.replace(call_date or '\0', ' ') if call_date else text
-        if m := re.search(r'\b(20\d{2})\b', masked):
-            fiscal_year = int(m.group(1))
-        elif call_date:
-            fiscal_year = int(call_date[:4])
-
-    return {'fiscal_quarter': quarter, 'fiscal_year': fiscal_year, 'call_date': call_date}
-
-
-def transcript_title(ticker, quarter, fiscal_year, call_date):
-    """{Ticker} - {Q}{YY} - {YYYY-MM-DD}, with unknown parts left as dashes."""
-    tick = (ticker or '—').upper()
-    if quarter and fiscal_year:
-        period = f'Q{int(quarter)}{int(fiscal_year) % 100:02d}'
-    elif fiscal_year:
-        period = f'FY{int(fiscal_year) % 100:02d}'
-    else:
-        period = '—'
-    return f'{tick} - {period} - {call_date or "—"}'
-
-
 def _daily_closes(ticker, start):
     """Ordered (date, close) pairs from `start` to today, for the price windows."""
     df = yf.Ticker(ticker).history(start=start, auto_adjust=True)
@@ -2350,8 +2290,8 @@ def _price_moves(ticker, rows):
         }
         if after is not None:
             prev_after_idx = after_i
-            prev_label = transcript_title(ticker, row.get('fiscal_quarter'),
-                                          row.get('fiscal_year'), row.get('call_date'))
+            prev_label = tx.title(ticker, row.get('fiscal_quarter'),
+                                  row.get('fiscal_year'), row.get('call_date'))
     return out
 
 
@@ -2366,8 +2306,8 @@ def _transcripts_for(cur, project_id, project=None):
     ticker = (project or {}).get('ticker')
     moves = _price_moves(ticker, rows) if rows else {}
     for row in rows:
-        row['title'] = transcript_title(row.get('ticker') or ticker, row.get('fiscal_quarter'),
-                                        row.get('fiscal_year'), row.get('call_date'))
+        row['title'] = tx.title(row.get('ticker') or ticker, row.get('fiscal_quarter'),
+                                row.get('fiscal_year'), row.get('call_date'))
         row['prices'] = moves.get(row['id']) or {}
     return rows
 
@@ -2398,12 +2338,21 @@ def create_transcripts(project_id):
     now = datetime.now().isoformat()
     stored, failed = [], []
     for f in files:
-        meta = _parse_transcript_name(f.filename)
+        raw = f.read()
+        if oversize := _check_size(raw, f.filename):
+            failed.append({'filename': f.filename,
+                           'error': (oversize[0].get_json() or {}).get('error', 'Too large')})
+            continue
+        # Read the document itself, not just its name: plenty of transcripts are
+        # called "Transcript.pdf", and even descriptive names rarely carry the
+        # call date, which is what the price windows hang off.
+        meta = tx.parse(f.filename, raw)
         _, ext = os.path.splitext(f.filename)
-        rename = transcript_title(ticker, meta['fiscal_quarter'], meta['fiscal_year'],
-                                  meta['call_date']).replace('—', 'unknown') + ext
-        info, err = _store_upload(f, parts=_project_folder(project) + ['transcripts'],
-                                  rename=rename)
+        rename = tx.title(ticker, meta['fiscal_quarter'], meta['fiscal_year'],
+                          meta['call_date']).replace('—', 'unknown') + ext
+        info, err = _store_bytes(raw, f.filename,
+                                 parts=_project_folder(project) + ['transcripts'],
+                                 rename=rename)
         if err:
             # One bad file shouldn't discard the whole batch — report it and
             # keep the rest, which is what you want when uploading ten at once.
@@ -2455,6 +2404,59 @@ def update_transcript(transcript_id):
         project = _project_exists(row['project_id'])
         rows = _transcripts_for(cur, row['project_id'], project)
     return jsonify(rows)
+
+
+@app.route('/api/projects/<int:project_id>/transcripts/redetect', methods=['POST'])
+def redetect_transcripts(project_id):
+    """Re-read the stored files and fill in whatever is still missing.
+
+    Transcripts uploaded before content parsing existed only ever saw their
+    filename, so they can sit there with no quarter and no date. This reads the
+    documents back out of the bucket rather than making you upload them again.
+    Fields you have already filled in by hand are left alone.
+    """
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT id, filename, object_key, fiscal_quarter, fiscal_year, call_date '
+            f'FROM project_transcripts WHERE project_id = {db.PH}', (project_id,),
+        )
+        rows = db.to_dicts(cur.fetchall())
+
+    updated, unreadable = 0, []
+    for row in rows:
+        if row['fiscal_quarter'] and row['fiscal_year'] and row['call_date']:
+            continue
+        try:
+            raw = storage.read(row['object_key'])
+        except Exception as exc:
+            unreadable.append({'filename': row['filename'], 'error': str(exc)})
+            continue
+
+        meta = tx.parse(row['filename'], raw)
+        sets, params = [], []
+        for field in ('fiscal_quarter', 'fiscal_year', 'call_date'):
+            if not row[field] and meta[field]:
+                sets.append(f'{field} = {db.PH}')
+                params.append(meta[field])
+        if not sets:
+            unreadable.append({'filename': row['filename'],
+                               'error': 'Nothing could be read from the document.'})
+            continue
+        with db.get_conn() as conn:
+            db.cursor(conn).execute(
+                f'UPDATE project_transcripts SET {", ".join(sets)} WHERE id = {db.PH}',
+                params + [row['id']],
+            )
+        updated += 1
+
+    with db.get_conn() as conn:
+        result = _transcripts_for(db.cursor(conn), project_id, project)
+    return jsonify({'transcripts': result, 'updated': updated, 'unreadable': unreadable})
 
 
 @app.route('/api/transcripts/<int:transcript_id>', methods=['DELETE'])
