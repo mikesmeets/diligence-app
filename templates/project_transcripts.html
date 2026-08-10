@@ -1,0 +1,328 @@
+{% extends '_project_page.html' %}
+{% block title %}Transcripts — {{ project.name }}{% endblock %}
+
+{% block content %}
+
+<!-- Upload -->
+<div class="bg-white rounded-xl border border-gray-200 p-5">
+  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Add transcripts</p>
+  <div class="flex items-center gap-3 flex-wrap">
+    <input id="files" type="file" multiple {{ '' if storage_enabled else 'disabled' }}
+      class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
+    <button id="upload-btn" onclick="upload()" {{ '' if storage_enabled else 'disabled' }}
+      class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
+      Upload
+    </button>
+    <span id="upload-status" class="text-xs text-gray-400"></span>
+  </div>
+  <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+    Pick as many as you like. Each is renamed
+    <code class="font-mono text-gray-500">{{ '{Ticker} - {Q}{YY} - {YYYY-MM-DD}' }}</code>,
+    read from the filename where possible. Anything it can't work out shows as
+    <span class="font-mono">—</span> and can be corrected below.
+  </p>
+</div>
+
+<!-- Price chart with the calls marked -->
+<div id="chart-card" class="bg-white rounded-xl border border-gray-200 p-5 mt-5 hidden">
+  <div class="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+      Price <span id="chart-legend" class="normal-case font-normal text-gray-500 ml-1"></span>
+    </p>
+    <div id="period-picker" class="inline-flex rounded-lg border border-gray-300 overflow-hidden text-xs"></div>
+  </div>
+  <div id="chart-wrap" class="relative">
+    <p id="chart-status" class="text-sm text-gray-400 py-12 text-center">Loading price history…</p>
+  </div>
+</div>
+
+<!-- Sort -->
+<div class="flex items-center justify-between gap-3 mt-6 mb-3 flex-wrap">
+  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+    Transcripts <span id="count" class="text-gray-300"></span>
+  </p>
+  <div class="flex items-center gap-2">
+    <label for="sort" class="text-xs text-gray-400">Sort</label>
+    <select id="sort" onchange="setSort(this.value)"
+      class="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500">
+      <option value="date-desc">Newest first</option>
+      <option value="date-asc">Oldest first</option>
+      <option value="reaction-desc">Best reaction</option>
+      <option value="reaction-asc">Worst reaction</option>
+    </select>
+  </div>
+</div>
+
+<div id="list"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// PROJECT_ID, MAX_MB, STORAGE_ENABLED, escHtml, fmtDay, tooBig and apiError all
+// come from _project_page.html — a top-level `const` is shared across script
+// tags, so redeclaring any of them throws before this file runs.
+const TICKER = {{ (project.ticker or '') | tojson }};
+
+let items = [], sort = 'date-desc', editing = new Set();
+
+const signed = v => v == null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+const tone   = v => v == null ? 'text-gray-300'
+                  : v >= 0 ? 'text-green-600' : 'text-red-500';
+
+// ── Data ──────────────────────────────────────────────────────────────────
+async function load() {
+  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts`);
+  items = res.ok ? await res.json() : [];
+  render();
+  if (TICKER) loadChart();
+}
+
+async function upload() {
+  const input = document.getElementById('files');
+  const files = Array.from(input.files || []);
+  if (!files.length) { alert('Choose one or more files first.'); return; }
+
+  if (files.some(tooBig)) return;
+
+  const btn    = document.getElementById('upload-btn');
+  const status = document.getElementById('upload-status');
+  btn.disabled = true;
+  status.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}…`;
+  try {
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f));
+    const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts`,
+                            { method: 'POST', body: fd });
+    if (!res.ok) { status.textContent = ''; alert(await apiError(res)); return; }
+    const out = await res.json();
+    items = out.transcripts;
+    input.value = '';
+    // Report partial failures rather than a bare success — with ten files it
+    // is not obvious that one is missing.
+    status.textContent = `Added ${out.added}.`;
+    if ((out.failed || []).length) {
+      alert('Some files were not added:\n'
+            + out.failed.map(f => `• ${f.filename}: ${f.error}`).join('\n'));
+    }
+    render();
+    if (TICKER) loadChart();
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  }
+}
+
+async function saveMeta(id) {
+  const q  = document.getElementById(`q-${id}`).value;
+  const fy = document.getElementById(`fy-${id}`).value;
+  const cd = document.getElementById(`cd-${id}`).value;
+  const res = await fetch(`/api/transcripts/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fiscal_quarter: q, fiscal_year: fy, call_date: cd }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  items = await res.json();
+  editing.delete(id);
+  render();
+  if (TICKER) loadChart();
+}
+
+async function remove(id) {
+  if (!confirm('Delete this transcript?')) return;
+  await fetch(`/api/transcripts/${id}`, { method: 'DELETE' });
+  await load();
+}
+
+function toggleEdit(id) {
+  editing.has(id) ? editing.delete(id) : editing.add(id);
+  render();
+}
+
+function setSort(v) { sort = v; render(); }
+
+function sorted() {
+  const copy = items.slice();
+  const rx = x => (x.prices || {}).reaction;
+  const by = {
+    'date-desc':     (a, b) => (b.call_date || '').localeCompare(a.call_date || ''),
+    'date-asc':      (a, b) => (a.call_date || '').localeCompare(b.call_date || ''),
+    // Missing figures sort last either way rather than pretending to be zero.
+    'reaction-desc': (a, b) => (rx(b) ?? -Infinity) - (rx(a) ?? -Infinity),
+    'reaction-asc':  (a, b) => (rx(a) ??  Infinity) - (rx(b) ??  Infinity),
+  }[sort];
+  return copy.sort(by);
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function metric(label, value, from, to, note) {
+  const win = from && to ? `${from} → ${to}` : '';
+  return `
+    <div class="flex-1 min-w-[8.5rem]">
+      <p class="text-[10px] uppercase tracking-wide text-gray-400">${label}</p>
+      <p class="text-lg font-semibold font-mono ${tone(value)}">${signed(value) ?? '—'}</p>
+      <p class="text-[10px] text-gray-300 leading-tight">${escHtml(note || win)}</p>
+    </div>`;
+}
+
+function render() {
+  document.getElementById('count').textContent = items.length ? `(${items.length})` : '';
+  const el = document.getElementById('list');
+
+  if (!items.length) {
+    el.innerHTML = `<div class="text-center py-16 text-gray-400">
+      <div class="text-4xl mb-3">🗒️</div>
+      <p class="text-sm">No transcripts yet. Upload a few quarters and the price
+        moves around each call fill in automatically.</p>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = sorted().map(t => {
+    const p = t.prices || {};
+    const isEditing = editing.has(t.id);
+    return `
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-gray-900 font-mono">${escHtml(t.title)}</h3>
+          <p class="text-xs text-gray-400 mt-0.5 truncate">${escHtml(t.filename)}</p>
+        </div>
+        <div class="flex gap-3 flex-shrink-0">
+          <button onclick="toggleEdit(${t.id})"
+            class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${isEditing ? 'Cancel' : 'Edit'}</button>
+          <a href="/api/transcripts/${t.id}/file" target="_blank"
+            class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Open</a>
+          <button onclick="remove(${t.id})"
+            class="text-xs text-gray-300 hover:text-red-500 transition-colors">Delete</button>
+        </div>
+      </div>
+
+      ${isEditing ? `
+        <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mb-3">
+          <label class="text-xs text-gray-500">Quarter
+            <select id="q-${t.id}" class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white">
+              <option value="">—</option>
+              ${[1, 2, 3, 4].map(q => `<option value="${q}" ${t.fiscal_quarter === q ? 'selected' : ''}>Q${q}</option>`).join('')}
+            </select>
+          </label>
+          <label class="text-xs text-gray-500">Fiscal year
+            <input id="fy-${t.id}" type="number" min="1990" max="2100" value="${t.fiscal_year ?? ''}"
+              class="block mt-1 w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" />
+          </label>
+          <label class="text-xs text-gray-500">Call date
+            <input id="cd-${t.id}" type="date" value="${t.call_date || ''}"
+              class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" />
+          </label>
+          <button onclick="saveMeta(${t.id})"
+            class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+        </div>
+      ` : ''}
+
+      <div class="flex gap-6 flex-wrap border-t border-gray-50 pt-3">
+        <div class="flex-1 min-w-[8.5rem]">
+          <p class="text-[10px] uppercase tracking-wide text-gray-400">Call date</p>
+          <p class="text-lg font-semibold text-gray-800">${t.call_date ? fmtDay(t.call_date) : '—'}</p>
+          <p class="text-[10px] text-gray-300 leading-tight">&nbsp;</p>
+        </div>
+        ${metric('Earnings reaction', p.reaction, p.reaction_from, p.reaction_to)}
+        ${metric('Between calls', p.between, p.between_from, p.between_to,
+                 p.between_label ? `since ${p.between_label.split(' - ')[1] || ''}` : 'no prior call')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────
+const PERIODS = [['1y', '1Y'], ['3y', '3Y'], ['5y', '5Y']];
+const CW = 820, CH = 240, CPAD = { t: 14, r: 14, b: 24, l: 46 };
+let period = '3y';
+
+function renderPeriodPicker() {
+  document.getElementById('period-picker').innerHTML = PERIODS.map(([key, label], i) => `
+    <button onclick="setPeriod('${key}')"
+      class="px-2.5 py-1 font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''}
+        ${key === period ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}">
+      ${label}</button>`).join('');
+}
+
+async function setPeriod(p) { period = p; renderPeriodPicker(); await loadChart(); }
+
+async function loadChart() {
+  const card = document.getElementById('chart-card');
+  card.classList.remove('hidden');
+  renderPeriodPicker();
+
+  const status = document.getElementById('chart-status');
+  const old = document.getElementById('chart-svg');
+  if (old) old.remove();
+  status.classList.remove('hidden');
+  status.textContent = 'Loading price history…';
+
+  let d;
+  try {
+    const res = await fetch(`/api/market/${encodeURIComponent(TICKER)}/history?period=${period}`);
+    if (!res.ok) { status.textContent = await apiError(res); return; }
+    d = await res.json();
+  } catch (e) {
+    status.textContent = 'Could not load price history.';
+    return;
+  }
+  if (!d.dates || !d.dates.length) { status.textContent = 'No price history.'; return; }
+  status.classList.add('hidden');
+
+  const n = d.dates.length;
+  const s = d.stock;
+  const yMin = Math.min(...s), yMax = Math.max(...s);
+  const span = (yMax - yMin) || 1;
+  const iw = CW - CPAD.l - CPAD.r, ih = CH - CPAD.t - CPAD.b;
+  const X = i => CPAD.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const Y = v => CPAD.t + (1 - (v - yMin) / span) * ih;
+  const path = s.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+
+  // Call markers: nearest sample at or before each call date. The weekly
+  // sampling on 3Y/5Y means a marker can sit a few days off the exact call.
+  const marks = items.filter(t => t.call_date).map(t => {
+    let idx = -1;
+    for (let i = 0; i < n; i++) { if (d.dates[i] <= t.call_date) idx = i; else break; }
+    if (idx < 0) return '';
+    const x = X(idx);
+    const rx = (t.prices || {}).reaction;
+    const color = rx == null ? '#9ca3af' : (rx >= 0 ? '#16a34a' : '#ef4444');
+    return `<line x1="${x}" y1="${CPAD.t}" x2="${x}" y2="${CH - CPAD.b}"
+              stroke="${color}" stroke-width="1" stroke-dasharray="3 3" opacity="0.55"/>
+            <circle cx="${x}" cy="${Y(s[idx])}" r="3" fill="${color}"/>`;
+  }).join('');
+
+  const ticks = [];
+  const every = Math.max(1, Math.floor((n - 1) / 4));
+  for (let i = 0; i < n; i += every) {
+    ticks.push(`<text x="${X(i)}" y="${CH - 7}" text-anchor="middle" font-size="10"
+      fill="#9ca3af">${new Date(d.dates[i] + 'T00:00:00')
+        .toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}</text>`);
+  }
+
+  const grid = [];
+  for (let k = 0; k <= 3; k++) {
+    const v = yMin + (span * k) / 3, y = Y(v);
+    grid.push(`<line x1="${CPAD.l}" y1="${y}" x2="${CW - CPAD.r}" y2="${y}"
+                 stroke="#f3f4f6" stroke-width="1"/>
+               <text x="${CPAD.l - 8}" y="${y + 3.5}" text-anchor="end" font-size="10"
+                 fill="#9ca3af">${v.toFixed(0)}</text>`);
+  }
+
+  document.getElementById('chart-wrap').insertAdjacentHTML('afterbegin', `
+    <svg id="chart-svg" viewBox="0 0 ${CW} ${CH}" width="100%" style="display:block">
+      ${grid.join('')}${ticks.join('')}${marks}
+      <path d="${path}" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round"/>
+    </svg>`);
+
+  const marked = items.filter(t => t.call_date).length;
+  document.getElementById('chart-legend').innerHTML =
+    `${escHtml(d.ticker)} · <span class="text-gray-400">${marked} call${marked === 1 ? '' : 's'} marked,
+     <span class="text-green-600">green</span> up on the print,
+     <span class="text-red-500">red</span> down</span>`;
+}
+
+load();
+</script>
+{% endblock %}

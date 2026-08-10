@@ -289,6 +289,25 @@ NOTE_SOURCE_KINDS = [
     'Industry contact', 'Press', 'Other',
 ]
 
+# Transcripts are documents with a fiscal identity: the quarter, the year and
+# the call date drive the title, the ordering and the price windows around each
+# call. Keeping them out of project_documents avoids four columns that would be
+# null for every other kind of document.
+_CREATE_TRANSCRIPTS = f"""
+    CREATE TABLE IF NOT EXISTS project_transcripts (
+        id         {_PK},
+        project_id     INTEGER NOT NULL,
+        ticker         TEXT,
+        fiscal_quarter INTEGER,
+        fiscal_year    INTEGER,
+        call_date      TEXT,
+        filename       TEXT    NOT NULL,
+        object_key     TEXT    NOT NULL,
+        size_bytes     INTEGER,
+        created_at     TEXT    NOT NULL
+    )
+"""
+
 _CREATE_DOC_TYPES = f"""
     CREATE TABLE IF NOT EXISTS doc_types (
         id   {_PK},
@@ -401,6 +420,7 @@ def init():
         cur.execute(_CREATE_NOTE_FILES)
         cur.execute(_CREATE_NOTE_SOURCES)
         cur.execute(_CREATE_DOC_TYPES)
+        cur.execute(_CREATE_TRANSCRIPTS)
         cur.execute(_CREATE_DOCUMENTS)
         cur.execute(_CREATE_MODEL_VERSIONS)
 

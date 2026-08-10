@@ -997,7 +997,8 @@ def delete_project(project_id):
         # Collect every bucket object this project owns before dropping the rows,
         # or the files are orphaned in storage with nothing pointing at them.
         keys = []
-        for table in ('note_attachments', 'project_documents', 'model_versions'):
+        for table in ('note_attachments', 'project_documents', 'model_versions',
+                      'project_transcripts'):
             cur.execute(
                 f'SELECT object_key FROM {table} WHERE project_id = {db.PH}', (project_id,),
             )
@@ -2204,9 +2205,286 @@ def download_model_version(version_id):
     return _redirect_to_file(row['object_key'], row['filename'], force_download=True)
 
 
+# ── Transcripts ─────────────────────────────────────────────────────────────
+#
+# The point of this section is comparison across quarters, so everything is
+# keyed off the call date: the title, the ordering, and the two price windows.
+
+# Two *trading* days either side, not calendar days — a Friday call with a
+# calendar window would land on a weekend and silently measure nothing.
+REACTION_DAYS = 2
+
+_MONTHS = {m: i for i, m in enumerate(
+    ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+     'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], start=1)}
+
+
+def _parse_transcript_name(filename):
+    """Best-effort quarter / fiscal year / call date out of a filename.
+
+    Transcript files arrive named every possible way, so this reads what it can
+    and leaves the rest null for the user to fill in. It is a head start, not a
+    source of truth — every field stays editable.
+    """
+    stem = re.sub(r'\.[A-Za-z0-9]{1,5}$', '', filename or '')
+    text = stem.replace('_', ' ').replace('.', ' ')
+    low  = text.lower()
+
+    quarter = None
+    if m := re.search(r'\bq([1-4])\b', low):
+        quarter = int(m.group(1))
+    elif m := re.search(r'\b([1-4])\s*q\b', low):
+        quarter = int(m.group(1))
+
+    call_date = None
+    if m := re.search(r'\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b', text):
+        y, mo, d = (int(g) for g in m.groups())
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            call_date = f'{y:04d}-{mo:02d}-{d:02d}'
+    if not call_date:
+        if m := re.search(r'\b([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(20\d{2})\b', low):
+            mo = _MONTHS.get(m.group(1))
+            if mo:
+                call_date = f'{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}'
+
+    # Fiscal year: an explicit FY beats a bare year, which beats the call date's
+    # year. A bare year sitting inside the call date must not be picked up twice.
+    fiscal_year = None
+    if m := re.search(r'\bfy\s*\'?(\d{2,4})\b', low):
+        raw = int(m.group(1))
+        fiscal_year = raw if raw > 100 else 2000 + raw
+    else:
+        masked = text.replace(call_date or '\0', ' ') if call_date else text
+        if m := re.search(r'\b(20\d{2})\b', masked):
+            fiscal_year = int(m.group(1))
+        elif call_date:
+            fiscal_year = int(call_date[:4])
+
+    return {'fiscal_quarter': quarter, 'fiscal_year': fiscal_year, 'call_date': call_date}
+
+
+def transcript_title(ticker, quarter, fiscal_year, call_date):
+    """{Ticker} - {Q}{YY} - {YYYY-MM-DD}, with unknown parts left as dashes."""
+    tick = (ticker or '—').upper()
+    if quarter and fiscal_year:
+        period = f'Q{int(quarter)}{int(fiscal_year) % 100:02d}'
+    elif fiscal_year:
+        period = f'FY{int(fiscal_year) % 100:02d}'
+    else:
+        period = '—'
+    return f'{tick} - {period} - {call_date or "—"}'
+
+
+def _daily_closes(ticker, start):
+    """Ordered (date, close) pairs from `start` to today, for the price windows."""
+    df = yf.Ticker(ticker).history(start=start, auto_adjust=True)
+    if df.empty or 'Close' not in df.columns:
+        return []
+    out = []
+    for dt, close in df['Close'].items():
+        v = _num(close)
+        if v is not None:
+            out.append((dt.strftime('%Y-%m-%d'), v))
+    return out
+
+
+def _price_moves(ticker, rows):
+    """Earnings reaction and between-call change for each transcript.
+
+    reaction  = close 2 trading days after the call / close 2 trading days before
+    between   = close 2 trading days before this call / close 2 days after the last
+
+    Returns {transcript_id: {...}}; quiet on any ticker or date we can't price,
+    since a missing window should blank one figure, not fail the page.
+    """
+    dated = sorted([r for r in rows if r.get('call_date')], key=lambda r: r['call_date'])
+    if not ticker or not dated:
+        return {}
+
+    # Reach back far enough to cover the window before the earliest call.
+    start = (datetime.strptime(dated[0]['call_date'], '%Y-%m-%d')
+             - timedelta(days=30)).strftime('%Y-%m-%d')
+    try:
+        series = _cached(f'tclose:{ticker}:{start}', 900, lambda: _daily_closes(ticker, start))
+    except Exception as exc:
+        app.logger.info('No price history for transcripts of %s: %s', ticker, exc)
+        return {}
+    if not series:
+        return {}
+
+    dates = [d for d, _ in series]
+    closes = [c for _, c in series]
+
+    def anchor(call_date):
+        """Index of the last session on or before the call."""
+        lo, hi, found = 0, len(dates) - 1, None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if dates[mid] <= call_date:
+                found, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        return found
+
+    def at(i):
+        return closes[i] if i is not None and 0 <= i < len(closes) else None
+
+    def pct(now, before):
+        return (now / before - 1) * 100 if now is not None and before else None
+
+    out, prev_after_idx, prev_label = {}, None, None
+    for row in dated:
+        i = anchor(row['call_date'])
+        before_i = i - REACTION_DAYS if i is not None else None
+        after_i  = i + REACTION_DAYS if i is not None else None
+        before, after = at(before_i), at(after_i)
+
+        out[row['id']] = {
+            'reaction':       pct(after, before),
+            'reaction_from':  dates[before_i] if before is not None else None,
+            'reaction_to':    dates[after_i] if after is not None else None,
+            'between':        pct(before, at(prev_after_idx)),
+            'between_from':   dates[prev_after_idx] if at(prev_after_idx) is not None else None,
+            'between_to':     dates[before_i] if before is not None else None,
+            'between_label':  prev_label,
+        }
+        if after is not None:
+            prev_after_idx = after_i
+            prev_label = transcript_title(ticker, row.get('fiscal_quarter'),
+                                          row.get('fiscal_year'), row.get('call_date'))
+    return out
+
+
+def _transcripts_for(cur, project_id, project=None):
+    cur.execute(
+        f'SELECT id, project_id, ticker, fiscal_quarter, fiscal_year, call_date, '
+        f'filename, size_bytes, created_at FROM project_transcripts '
+        f'WHERE project_id = {db.PH} ORDER BY call_date DESC, id DESC',
+        (project_id,),
+    )
+    rows = db.to_dicts(cur.fetchall())
+    ticker = (project or {}).get('ticker')
+    moves = _price_moves(ticker, rows) if rows else {}
+    for row in rows:
+        row['title'] = transcript_title(row.get('ticker') or ticker, row.get('fiscal_quarter'),
+                                        row.get('fiscal_year'), row.get('call_date'))
+        row['prices'] = moves.get(row['id']) or {}
+    return rows
+
+
+@app.route('/api/projects/<int:project_id>/transcripts', methods=['GET'])
+def get_transcripts(project_id):
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+    with db.get_conn() as conn:
+        return jsonify(_transcripts_for(db.cursor(conn), project_id, project))
+
+
+@app.route('/api/projects/<int:project_id>/transcripts', methods=['POST'])
+def create_transcripts(project_id):
+    """Upload any number of transcripts at once, naming each from its filename."""
+    if missing := _bucket_missing():
+        return missing
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+
+    files = [f for f in request.files.getlist('files') if f and f.filename]
+    if not files:
+        return jsonify({'error': 'No files supplied'}), 400
+
+    ticker = (project.get('ticker') or '').upper() or None
+    now = datetime.now().isoformat()
+    stored, failed = [], []
+    for f in files:
+        meta = _parse_transcript_name(f.filename)
+        _, ext = os.path.splitext(f.filename)
+        rename = transcript_title(ticker, meta['fiscal_quarter'], meta['fiscal_year'],
+                                  meta['call_date']).replace('—', 'unknown') + ext
+        info, err = _store_upload(f, parts=_project_folder(project) + ['transcripts'],
+                                  rename=rename)
+        if err:
+            # One bad file shouldn't discard the whole batch — report it and
+            # keep the rest, which is what you want when uploading ten at once.
+            body = err[0].get_json() if hasattr(err[0], 'get_json') else {}
+            failed.append({'filename': f.filename, 'error': (body or {}).get('error', 'Upload failed')})
+            continue
+        stored.append((info, meta))
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        for info, meta in stored:
+            db.insert_id(
+                cur, 'project_transcripts',
+                ('project_id', 'ticker', 'fiscal_quarter', 'fiscal_year', 'call_date',
+                 'filename', 'object_key', 'size_bytes', 'created_at'),
+                (project_id, ticker, meta['fiscal_quarter'], meta['fiscal_year'],
+                 meta['call_date'], info['filename'], info['object_key'],
+                 info['size_bytes'], now),
+            )
+        rows = _transcripts_for(cur, project_id, project)
+    return jsonify({'transcripts': rows, 'added': len(stored), 'failed': failed}), 201
+
+
+@app.route('/api/transcripts/<int:transcript_id>', methods=['PATCH'])
+def update_transcript(transcript_id):
+    """Correct what the filename parse got wrong. The title follows the fields."""
+    data = request.get_json(force=True)
+    sets, params = [], []
+    for field in ('fiscal_quarter', 'fiscal_year'):
+        if field in data:
+            sets.append(f'{field} = {db.PH}')
+            params.append(_opt_int(data, field))
+    for field in ('call_date', 'ticker'):
+        if field in data:
+            sets.append(f'{field} = {db.PH}')
+            params.append((data.get(field) or '').strip() or None)
+    if not sets:
+        return jsonify({'error': 'Nothing to update'}), 400
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT project_id FROM project_transcripts WHERE id = {db.PH}',
+                    (transcript_id,))
+        row = db.to_dict(cur.fetchone())
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        cur.execute(f'UPDATE project_transcripts SET {", ".join(sets)} WHERE id = {db.PH}',
+                    params + [transcript_id])
+        project = _project_exists(row['project_id'])
+        rows = _transcripts_for(cur, row['project_id'], project)
+    return jsonify(rows)
+
+
+@app.route('/api/transcripts/<int:transcript_id>', methods=['DELETE'])
+def delete_transcript(transcript_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT object_key FROM project_transcripts WHERE id = {db.PH}',
+                    (transcript_id,))
+        row = db.to_dict(cur.fetchone())
+        cur.execute(f'DELETE FROM project_transcripts WHERE id = {db.PH}', (transcript_id,))
+    if row:
+        _delete_keys([row['object_key']])
+    return jsonify({'ok': True})
+
+
+@app.route('/api/transcripts/<int:transcript_id>/file')
+def download_transcript(transcript_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT filename, object_key FROM project_transcripts WHERE id = {db.PH}',
+                    (transcript_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return _redirect_to_file(row['object_key'], row['filename'])
+
+
 # ── Sub-pages ───────────────────────────────────────────────────────────────
 
-@app.route('/projects/<int:project_id>/<any(notes, documents, model):section>')
+@app.route('/projects/<int:project_id>/<any(notes, documents, transcripts, model):section>')
 def project_section(project_id, section):
     project = _project_exists(project_id)
     if not project:
