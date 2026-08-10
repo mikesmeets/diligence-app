@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -2298,11 +2299,17 @@ def _price_moves(ticker, rows):
 def _transcripts_for(cur, project_id, project=None):
     cur.execute(
         f'SELECT id, project_id, ticker, fiscal_quarter, fiscal_year, call_date, '
-        f'filename, size_bytes, created_at FROM project_transcripts '
+        f'filename, size_bytes, created_at, headline, sentiment, summary, highlights, '
+        f'themes, ceo, cfo, ir, summarized_at FROM project_transcripts '
         f'WHERE project_id = {db.PH} ORDER BY call_date DESC, id DESC',
         (project_id,),
     )
     rows = db.to_dicts(cur.fetchall())
+    for row in rows:
+        try:
+            row['themes'] = json.loads(row.get('themes') or '[]')
+        except ValueError:
+            row['themes'] = []
     ticker = (project or {}).get('ticker')
     moves = _price_moves(ticker, rows) if rows else {}
     for row in rows:
@@ -2574,6 +2581,15 @@ def _ai_context(project):
 # Anything older than this is treated as interrupted rather than in progress.
 GENERATION_STALE_SECONDS = 15 * 60
 
+# Some jobs legitimately run much longer. Summarising a batch of transcripts
+# takes roughly a minute per call, so a decade of quarters can pass an hour —
+# the default window would declare it interrupted while it was still working,
+# and claim nothing was saved when in fact each summary is written as it lands.
+STALE_SECONDS = {
+    'transcript_calls':  4 * 60 * 60,
+    'transcript_trends': 45 * 60,
+}
+
 
 def _job_start(project_id, field):
     with db.get_conn() as conn:
@@ -2616,9 +2632,10 @@ def _job_read(project_id, field):
             age = (datetime.now() - datetime.fromisoformat(job['started_at'])).total_seconds()
         except (TypeError, ValueError):
             age = 0
-        if age > GENERATION_STALE_SECONDS:
+        if age > STALE_SECONDS.get(field, GENERATION_STALE_SECONDS):
             msg = ('The draft was interrupted — most likely the server restarted while it '
-                   'was running. Nothing was saved; try again.')
+                   'was running. Anything already finished was saved; run it again to '
+                   'pick up the rest.')
             _job_finish(project_id, field, 'error', msg)
             return {'status': 'error', 'error': msg}
     return job
@@ -3009,6 +3026,201 @@ def refresh_prices():
 
     return jsonify({'updated': updated})
 
+
+
+# ── Transcript AI summaries ─────────────────────────────────────────────────
+#
+# Summarising a batch of calls takes minutes, so both jobs run in a background
+# thread against the existing generation_jobs table and the page polls. The
+# field names are synthetic: 'transcript_calls' for the batch, 'transcript_trends'
+# for the synthesis, which keeps the unique (project_id, field) index meaningful
+# and stops two runs of the same job overlapping.
+
+CALLS_JOB  = 'transcript_calls'
+TRENDS_JOB = 'transcript_trends'
+
+
+def _pct_text(value):
+    return f'{value:+.1f}%' if value is not None else None
+
+
+def _summarize_calls_worker(project_id, only_missing):
+    """Summarise each call that needs it. One failure doesn't stop the batch."""
+    done, failed = 0, []
+    try:
+        project = _project_exists(project_id)
+        if not project:
+            _job_finish(project_id, CALLS_JOB, 'error', 'Project no longer exists.')
+            return
+
+        with db.get_conn() as conn:
+            rows = _transcripts_for(db.cursor(conn), project_id, project)
+
+        targets = [r for r in rows if not (only_missing and (r.get('summary') or '').strip())]
+        if not targets:
+            _job_finish(project_id, CALLS_JOB, 'done', None)
+            return
+
+        for row in targets:
+            try:
+                with db.get_conn() as conn:
+                    cur = db.cursor(conn)
+                    cur.execute(
+                        f'SELECT object_key, filename FROM project_transcripts '
+                        f'WHERE id = {db.PH}', (row['id'],),
+                    )
+                    stored = db.to_dict(cur.fetchone())
+                if not stored:
+                    continue
+
+                raw = storage.read(stored['object_key'])
+                text = tx.full_text(raw, stored['filename'])
+                if not text.strip():
+                    failed.append(f"{row['title']}: no readable text")
+                    continue
+
+                prices = row.get('prices') or {}
+                result = ai.summarize_call(project, {
+                    'period':    row['title'].split(' - ')[1] if ' - ' in row['title'] else '',
+                    'call_date': row.get('call_date'),
+                    'reaction':  _pct_text(prices.get('reaction')),
+                    'between':   _pct_text(prices.get('between')),
+                }, text)
+
+                with db.get_conn() as conn:
+                    db.cursor(conn).execute(
+                        f'UPDATE project_transcripts SET headline = {db.PH}, sentiment = {db.PH}, '
+                        f'summary = {db.PH}, highlights = {db.PH}, themes = {db.PH}, '
+                        f'ceo = {db.PH}, cfo = {db.PH}, ir = {db.PH}, summarized_at = {db.PH} '
+                        f'WHERE id = {db.PH}',
+                        (result['headline'], result['sentiment'], result['summary'],
+                         result['highlights'], json.dumps(result['themes']),
+                         result['ceo'], result['cfo'], result['ir'],
+                         datetime.now().isoformat(), row['id']),
+                    )
+                done += 1
+            except Exception as exc:
+                app.logger.exception('Call summary failed for transcript %s', row['id'])
+                failed.append(f"{row['title']}: {type(exc).__name__}: {exc}")
+
+        # Partial success is still success — report what didn't make it rather
+        # than throwing away the summaries that did.
+        note = None if not failed else f'{done} done, {len(failed)} failed: ' + '; '.join(failed[:5])
+        _job_finish(project_id, CALLS_JOB, 'done' if done else 'error',
+                    note if failed else None)
+    except Exception as exc:
+        app.logger.exception('Transcript summary job failed')
+        _job_finish(project_id, CALLS_JOB, 'error', f'{type(exc).__name__}: {exc}')
+
+
+def _trends_worker(project_id):
+    try:
+        project = _project_exists(project_id)
+        if not project:
+            _job_finish(project_id, TRENDS_JOB, 'error', 'Project no longer exists.')
+            return
+
+        with db.get_conn() as conn:
+            rows = _transcripts_for(db.cursor(conn), project_id, project)
+
+        # Oldest first: the synthesis is about a trajectory, so the order it
+        # reads them in is the order they happened.
+        summarized = [r for r in rows if (r.get('summary') or '').strip()]
+        summarized.sort(key=lambda r: r.get('call_date') or '')
+        if len(summarized) < 2:
+            _job_finish(project_id, TRENDS_JOB, 'error',
+                        'Summarise at least two calls first — trends need more than one quarter.')
+            return
+
+        calls = []
+        for r in summarized:
+            prices = r.get('prices') or {}
+            calls.append({
+                'period':     r['title'].split(' - ')[1] if ' - ' in r['title'] else '',
+                'call_date':  r.get('call_date'),
+                'headline':   r.get('headline'),
+                'sentiment':  r.get('sentiment'),
+                'summary':    r.get('summary'),
+                'highlights': r.get('highlights'),
+                'reaction':   _pct_text(prices.get('reaction')),
+                'between':    _pct_text(prices.get('between')),
+            })
+
+        result = ai.summarize_trends(project, calls)
+        with db.get_conn() as conn:
+            db.cursor(conn).execute(
+                f'UPDATE projects SET transcript_trends = {db.PH}, '
+                f'transcript_trends_generated_at = {db.PH} WHERE id = {db.PH}',
+                (json.dumps(result), datetime.now().isoformat(), project_id),
+            )
+        _job_finish(project_id, TRENDS_JOB, 'done', None)
+    except Exception as exc:
+        app.logger.exception('Trends job failed')
+        _job_finish(project_id, TRENDS_JOB, 'error', f'{type(exc).__name__}: {exc}')
+
+
+@app.route('/api/projects/<int:project_id>/transcripts/summarize', methods=['POST'])
+def summarize_transcripts(project_id):
+    if not ai.enabled():
+        return jsonify({'error': 'No Anthropic API key. Add one on the Admin page.'}), 503
+    if missing := _bucket_missing():
+        return missing
+
+    existing = _job_read(project_id, CALLS_JOB)
+    if existing and existing['status'] == 'running':
+        return jsonify({'status': 'running'}), 202
+
+    only_missing = (request.args.get('all') or '').lower() not in ('1', 'true')
+    _job_start(project_id, CALLS_JOB)
+    threading.Thread(target=_summarize_calls_worker, args=(project_id, only_missing),
+                     daemon=True).start()
+    return jsonify({'status': 'running'}), 202
+
+
+@app.route('/api/projects/<int:project_id>/transcripts/trends', methods=['POST'])
+def generate_transcript_trends(project_id):
+    if not ai.enabled():
+        return jsonify({'error': 'No Anthropic API key. Add one on the Admin page.'}), 503
+
+    existing = _job_read(project_id, TRENDS_JOB)
+    if existing and existing['status'] == 'running':
+        return jsonify({'status': 'running'}), 202
+
+    _job_start(project_id, TRENDS_JOB)
+    threading.Thread(target=_trends_worker, args=(project_id,), daemon=True).start()
+    return jsonify({'status': 'running'}), 202
+
+
+@app.route('/api/projects/<int:project_id>/transcripts/status')
+def transcript_job_status(project_id):
+    """Both jobs plus the current data, so one poll refreshes the whole page."""
+    project = _project_exists(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+    with db.get_conn() as conn:
+        rows = _transcripts_for(db.cursor(conn), project_id, project)
+    return jsonify({
+        'calls':       _job_read(project_id, CALLS_JOB),
+        'trends':      _job_read(project_id, TRENDS_JOB),
+        'transcripts': rows,
+        'trend_data':  _trend_data(project_id),
+    })
+
+
+def _trend_data(project_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT transcript_trends, transcript_trends_generated_at FROM projects '
+            f'WHERE id = {db.PH}', (project_id,),
+        )
+        row = db.to_dict(cur.fetchone()) or {}
+    try:
+        data = json.loads(row.get('transcript_trends') or '{}')
+    except ValueError:
+        data = {}
+    data['generated_at'] = row.get('transcript_trends_generated_at')
+    return data
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

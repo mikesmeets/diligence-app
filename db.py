@@ -466,6 +466,20 @@ _NOTE_MIGRATIONS = [
     ('title',          'TEXT'),
 ]
 
+# Per-call AI summary. Kept on the transcript row rather than a side table: one
+# summary per call, written once and edited rarely.
+_TRANSCRIPT_MIGRATIONS = [
+    ('headline',     'TEXT'),      # "Q3 2018 — First Public Earnings Call"
+    ('sentiment',    'TEXT'),      # Bullish | Bearish | Mixed | Neutral
+    ('summary',      'TEXT'),
+    ('highlights',   'TEXT'),
+    ('themes',       'TEXT'),      # JSON array of short tags
+    ('ceo',          'TEXT'),
+    ('cfo',          'TEXT'),
+    ('ir',           'TEXT'),
+    ('summarized_at', 'TEXT'),
+]
+
 _PROJECT_MIGRATIONS = [
     ('business_description', 'TEXT'),
     ('pros',                 'TEXT'),
@@ -480,6 +494,10 @@ _PROJECT_MIGRATIONS = [
     # Highest model version ever issued, so deleting one can't recycle its
     # number onto a different file.
     ('model_version_seq', 'INTEGER'),
+    # Cross-call synthesis: JSON holding the trend cards and the milestone
+    # timeline, so the shape can grow without another migration each time.
+    ('transcript_trends',              'TEXT'),
+    ('transcript_trends_generated_at', 'TEXT'),
     ('business_description_generated_at', 'TEXT'),
     ('bull_case_generated_at',            'TEXT'),
     ('bear_case_generated_at',            'TEXT'),
@@ -491,7 +509,8 @@ def migrate():
     with get_conn() as conn:
         cur = cursor(conn)
         for table, cols in (('ideas', _MIGRATIONS), ('projects', _PROJECT_MIGRATIONS),
-                            ('project_notes', _NOTE_MIGRATIONS)):
+                            ('project_notes', _NOTE_MIGRATIONS),
+                            ('project_transcripts', _TRANSCRIPT_MIGRATIONS)):
             for col, typ in cols:
                 if IS_PG:
                     cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}')

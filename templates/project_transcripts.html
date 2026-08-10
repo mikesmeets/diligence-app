@@ -18,6 +18,11 @@
       class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60 transition-colors">
       Re-detect
     </button>
+    <button id="summarize-btn" onclick="summarize()"
+      title="Summarise each call that doesn't have one yet"
+      class="px-3 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors">
+      ✦ Summarise calls
+    </button>
     <span id="upload-status" class="text-xs text-gray-400"></span>
   </div>
   <p class="text-xs text-gray-400 mt-3 leading-relaxed">
@@ -26,6 +31,20 @@
     read from the filename where possible. Anything it can't work out shows as
     <span class="font-mono">—</span> and can be corrected below.
   </p>
+</div>
+
+<!-- Long-term trends across every call -->
+<div class="bg-white rounded-xl border border-gray-200 p-5 mt-5">
+  <div class="flex items-baseline justify-between gap-3 flex-wrap">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+      Long-term trends <span id="trends-when" class="normal-case font-normal text-gray-300 ml-1"></span>
+    </p>
+    <button id="trends-btn" onclick="buildTrends()"
+      class="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors">
+      ✦ Build
+    </button>
+  </div>
+  <div id="trends-body" class="mt-4"></div>
 </div>
 
 <!-- Price chart with the calls marked -->
@@ -68,7 +87,25 @@
 // tags, so redeclaring any of them throws before this file runs.
 const TICKER = {{ (project.ticker or '') | tojson }};
 
-let items = [], sort = 'date-desc', editing = new Set();
+let items = [], sort = 'date-desc', editing = new Set(), trends = null;
+
+const SENT_CLASS = {
+  Bullish: 'bg-green-50 text-green-700',
+  Bearish: 'bg-red-50 text-red-600',
+  Mixed:   'bg-amber-50 text-amber-700',
+  Neutral: 'bg-gray-100 text-gray-500',
+};
+const TONE_CLASS = {
+  good: 'border-t-green-500', warn: 'border-t-amber-500', bad: 'border-t-red-500',
+};
+
+// CEO / CFO / IR, appended to the filename line when the summary found them.
+function people(t) {
+  const bits = [['CEO', t.ceo], ['CFO', t.cfo], ['IR', t.ir]]
+    .filter(([, v]) => (v || '').trim())
+    .map(([k, v]) => `${k}: ${escHtml(v)}`);
+  return bits.length ? ` <span class="text-gray-300">·</span> ${bits.join(' | ')}` : '';
+}
 
 const signed = v => v == null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
 const tone   = v => v == null ? 'text-gray-300'
@@ -76,9 +113,23 @@ const tone   = v => v == null ? 'text-gray-300'
 
 // ── Data ──────────────────────────────────────────────────────────────────
 async function load() {
-  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts`);
-  items = res.ok ? await res.json() : [];
-  render();
+  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/status`);
+  if (res.ok) {
+    const s = await res.json();
+    items  = s.transcripts || [];
+    trends = s.trend_data || null;
+    render();
+    renderTrends();
+    // A job may still be running from a previous visit — pick it back up.
+    if ((s.calls && s.calls.status === 'running') ||
+        (s.trends && s.trends.status === 'running')) {
+      setBusy('summarize-btn', s.calls && s.calls.status === 'running',
+              '✦ Summarising…', '✦ Summarise calls');
+      setBusy('trends-btn', s.trends && s.trends.status === 'running',
+              '✦ Working…', '✦ Build');
+      poll();
+    }
+  }
   if (TICKER) loadChart();
 }
 
@@ -141,6 +192,104 @@ async function redetect() {
     btn.disabled = false;
     setTimeout(() => { status.textContent = ''; }, 5000);
   }
+}
+
+// ── AI summaries ──────────────────────────────────────────────────────────
+let polling = false;
+
+function setBusy(id, on, busyText, idleText) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = on;
+  btn.textContent = on ? busyText : idleText;
+}
+
+async function summarize() {
+  if (!items.length) { alert('Upload some transcripts first.'); return; }
+  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/summarize`,
+                          { method: 'POST' });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  setBusy('summarize-btn', true, '✦ Summarising…', '✦ Summarise calls');
+  poll();
+}
+
+async function buildTrends() {
+  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/trends`,
+                          { method: 'POST' });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  setBusy('trends-btn', true, '✦ Working…', '✦ Build');
+  poll();
+}
+
+// Both jobs run server-side and survive this tab closing, so the poll just
+// mirrors whatever state the server reports.
+async function poll() {
+  if (polling) return;
+  polling = true;
+  try {
+    while (true) {
+      await new Promise(r => setTimeout(r, 3000));
+      let s;
+      try {
+        const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/status`);
+        if (!res.ok) continue;
+        s = await res.json();
+      } catch (e) { continue; }
+
+      items = s.transcripts || items;
+      trends = s.trend_data || trends;
+      render();
+      renderTrends();
+
+      const callsRunning  = s.calls  && s.calls.status  === 'running';
+      const trendsRunning = s.trends && s.trends.status === 'running';
+      setBusy('summarize-btn', callsRunning, '✦ Summarising…', '✦ Summarise calls');
+      setBusy('trends-btn',   trendsRunning, '✦ Working…',     '✦ Build');
+
+      if (!callsRunning && !trendsRunning) {
+        for (const job of [s.calls, s.trends]) {
+          if (job && job.status === 'error' && job.error) alert(job.error);
+        }
+        return;
+      }
+    }
+  } finally {
+    polling = false;
+  }
+}
+
+function renderTrends() {
+  const body = document.getElementById('trends-body');
+  const when = document.getElementById('trends-when');
+  const cards = (trends && trends.trends) || [];
+  const miles = (trends && trends.milestones) || [];
+
+  when.textContent = trends && trends.generated_at
+    ? `drafted ${fmtWhen(trends.generated_at)}` : '';
+
+  if (!cards.length && !miles.length) {
+    body.innerHTML = `<p class="text-sm text-gray-400">
+      Nothing yet. Summarise the calls first, then Build reads those summaries and
+      draws out what only shows up across quarters.</p>`;
+    return;
+  }
+
+  body.innerHTML = `
+    ${cards.length ? `<div class="grid md:grid-cols-2 gap-4">${cards.map(c => `
+      <div class="border border-gray-200 border-t-4 ${TONE_CLASS[c.tone] || 'border-t-gray-400'} rounded-lg p-4">
+        <h4 class="text-sm font-semibold text-gray-900 mb-1.5">${escHtml(c.title)}</h4>
+        <p class="text-sm text-gray-600 leading-relaxed">${escHtml(c.body)}</p>
+      </div>`).join('')}</div>` : ''}
+
+    ${miles.length ? `
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mt-6 mb-3">Milestones</p>
+      <div class="border-l-2 border-gray-100 pl-4 space-y-4">${miles.map(m => `
+        <div class="relative">
+          <span class="absolute -left-[1.32rem] top-1.5 w-2 h-2 rounded-full bg-blue-500"></span>
+          <p class="text-[11px] uppercase tracking-wide text-gray-400">${escHtml(m.period)}</p>
+          <p class="text-sm font-semibold text-gray-900">${escHtml(m.title)}</p>
+          <p class="text-sm text-gray-600 leading-relaxed mt-0.5">${escHtml(m.description)}</p>
+        </div>`).join('')}</div>` : ''}`;
 }
 
 async function saveMeta(id) {
@@ -216,8 +365,12 @@ function render() {
       <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
         <div class="min-w-0">
           <h3 class="text-base font-semibold text-gray-900 font-mono">${escHtml(t.title)}</h3>
-          <p class="text-xs text-gray-400 mt-0.5 truncate">${escHtml(t.filename)}</p>
+          ${t.headline ? `<p class="text-sm text-gray-700 mt-1">${escHtml(t.headline)}</p>` : ''}
+          <p class="text-xs text-gray-400 mt-0.5 truncate">${escHtml(t.filename)}${
+            people(t)}</p>
         </div>
+        ${t.sentiment ? `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+          SENT_CLASS[t.sentiment] || SENT_CLASS.Neutral}">${escHtml(t.sentiment)}</span>` : ''}
         <div class="flex gap-3 flex-shrink-0">
           <button onclick="toggleEdit(${t.id})"
             class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${isEditing ? 'Cancel' : 'Edit'}</button>
@@ -259,6 +412,21 @@ function render() {
         ${metric('Between calls', p.between, p.between_from, p.between_to,
                  p.between_label ? `since ${p.between_label.split(' - ')[1] || ''}` : 'no prior call')}
       </div>
+
+      ${t.summary ? `
+        <div class="grid md:grid-cols-2 gap-x-8 gap-y-4 border-t border-gray-100 mt-4 pt-4">
+          <div>
+            <p class="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">Call summary</p>
+            <p class="text-sm text-gray-700 leading-relaxed">${escHtml(t.summary)}</p>
+            ${(t.themes || []).length ? `<div class="flex flex-wrap gap-1.5 mt-3">${
+              t.themes.map(x => `<span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-[11px]">${escHtml(x)}</span>`).join('')
+            }</div>` : ''}
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">Key highlights</p>
+            <p class="text-sm text-gray-700 leading-relaxed">${escHtml(t.highlights || '')}</p>
+          </div>
+        </div>` : ''}
     </div>`;
   }).join('');
 }

@@ -150,6 +150,10 @@ def key_source():
     return None
 
 
+def enabled():
+    return bool(api_key())
+
+
 def model():
     return db.get_setting('ai_model') or DEFAULT_MODEL
 
@@ -270,3 +274,221 @@ def _is_unsupported_param(exc):
         return True
     text = str(exc).lower()
     return 'fallback' in text or 'beta' in text or 'unexpected keyword' in text
+
+
+# ── Earnings transcripts ─────────────────────────────────────────────────────
+#
+# Two passes. Each call is summarised on its own, then the trends pass reads
+# those summaries rather than the raw transcripts: it keeps the cross-call
+# request small however many quarters you hold, and it keeps the trends
+# consistent with the per-call cards a reader sees underneath them.
+
+SENTIMENTS = ['Bullish', 'Mixed', 'Bearish', 'Neutral']
+
+CALL_SYSTEM_PROMPT = """You are assisting a professional investor reading earnings \
+call transcripts to build a view of a business over time.
+
+Summarise what management actually said and what changed versus prior quarters. Be \
+specific: name products, segments, figures and guidance where the transcript gives \
+them. Prefer a concrete number to an adjective. Do not speculate beyond the \
+transcript, and do not give investment advice — the reader forms their own view.
+
+Where the transcript does not support a field, leave it empty rather than guessing. \
+Executive names must come from the transcript's speaker list, not from memory."""
+
+CALL_PROMPT = """Summarise this earnings call for {name} ({ticker}).
+
+Fiscal period: {period}
+Call date: {call_date}
+Share price reaction around the call: {reaction}
+Move since the prior call: {between}
+
+Write:
+- headline: the quarter plus a short phrase capturing what made this call matter,
+  in the style "Q3 2024 - Guidance Cut on Creator Churn". Under 70 characters.
+- sentiment: one of Bullish, Mixed, Bearish, Neutral - management's tone and the
+  substance of the results together, not the share price reaction.
+- ceo / cfo / ir: names of the speakers holding those roles on this call, taken from
+  the speaker list. Empty string if not identifiable.
+- summary: one paragraph on what the quarter was about and why it landed the way it
+  did. 90-140 words.
+- highlights: one paragraph of the specific disclosures worth remembering - figures,
+  guidance, segment detail, product news. 90-140 words.
+- themes: 3-5 short tags of two or three words each, e.g. "Creator Churn",
+  "Margin Expansion".
+
+TRANSCRIPT
+{transcript}"""
+
+TRENDS_PROMPT = """Below are summaries of {count} consecutive earnings calls for \
+{name} ({ticker}), oldest first, each with the share price reaction to that call.
+
+Identify what the business looks like across the whole span - the arcs that only show \
+up when the quarters are read together. Judge trends by what management said and how \
+the numbers moved, and note where the two diverged.
+
+Write:
+- trends: 4-7 cards. Each has a title that makes a claim rather than naming a topic
+  ("Marketplace Pivot Traded Growth For Creator Attrition", not "Marketplace"), a
+  tone of good, warn or bad from the shareholder's point of view, and a body of
+  70-130 words citing the specific quarters that show it.
+- milestones: 6-12 entries in chronological order, each with a period (e.g.
+  "Q4 2023 - February 2024"), a title, and a 40-90 word description. Cover the
+  turning points: strategy changes, management changes, the largest price reactions,
+  and the quarters where the trajectory visibly shifted.
+
+CALL SUMMARIES
+{summaries}"""
+
+_CALL_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'headline':   {'type': 'string'},
+        'sentiment':  {'type': 'string', 'enum': SENTIMENTS},
+        'ceo':        {'type': 'string'},
+        'cfo':        {'type': 'string'},
+        'ir':         {'type': 'string'},
+        'summary':    {'type': 'string'},
+        'highlights': {'type': 'string'},
+        'themes':     {'type': 'array', 'items': {'type': 'string'}},
+    },
+    'required': ['headline', 'sentiment', 'summary', 'highlights', 'themes'],
+    'additionalProperties': False,
+}
+
+_TRENDS_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'trends': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'title': {'type': 'string'},
+                    'tone':  {'type': 'string', 'enum': ['good', 'warn', 'bad']},
+                    'body':  {'type': 'string'},
+                },
+                'required': ['title', 'tone', 'body'],
+                'additionalProperties': False,
+            },
+        },
+        'milestones': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'period':      {'type': 'string'},
+                    'title':       {'type': 'string'},
+                    'description': {'type': 'string'},
+                },
+                'required': ['period', 'title', 'description'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    'required': ['trends', 'milestones'],
+    'additionalProperties': False,
+}
+
+
+def call_prompt():
+    return db.get_setting('prompt_transcript_call') or CALL_PROMPT
+
+
+def trends_prompt():
+    return db.get_setting('prompt_transcript_trends') or TRENDS_PROMPT
+
+
+def _structured(prompt, system, schema, max_tokens=16000):
+    """One structured-output call, returning the parsed object."""
+    key = api_key()
+    if not key:
+        raise NotConfigured(
+            'No Anthropic API key. Set the ANTHROPIC_API_KEY environment variable, '
+            'or add a key on the Admin page.'
+        )
+
+    import anthropic  # imported lazily so the app still boots without the package
+
+    client = anthropic.Anthropic(api_key=key)
+    message = _send(client, {
+        'model':      model(),
+        'max_tokens': max_tokens,
+        'system':     system,
+        'messages':   [{'role': 'user', 'content': prompt}],
+        'output_config': {
+            'format': {'type': 'json_schema', 'schema': schema},
+            'effort': effort(),
+        },
+    })
+
+    if getattr(message, 'stop_reason', None) == 'refusal':
+        raise Refused(
+            "Claude declined to answer this one. That's usually a false positive on "
+            'benign financial work — rephrasing the prompt on the Admin page normally clears it.'
+        )
+    text = next((b.text for b in message.content if b.type == 'text'), '')
+    if not text:
+        raise RuntimeError('Claude returned no text.')
+    return json.loads(text)
+
+
+def _fill(template, pairs):
+    out = template
+    for token, value in pairs:
+        out = out.replace(token, str(value))
+    return out
+
+
+def summarize_call(project, meta, transcript):
+    """Summarise one earnings call. `meta` carries the period and price context."""
+    prompt = _fill(call_prompt(), (
+        ('{name}',       project.get('name') or ''),
+        ('{ticker}',     project.get('ticker') or '—'),
+        ('{period}',     meta.get('period') or 'unknown'),
+        ('{call_date}',  meta.get('call_date') or 'unknown'),
+        ('{reaction}',   meta.get('reaction') or 'not available'),
+        ('{between}',    meta.get('between') or 'not available'),
+        ('{transcript}', transcript),
+    ))
+
+    data = _structured(prompt, CALL_SYSTEM_PROMPT, _CALL_SCHEMA)
+    themes = [str(t).strip() for t in (data.get('themes') or []) if str(t).strip()]
+    return {
+        'headline':   (data.get('headline') or '').strip(),
+        'sentiment':  data.get('sentiment') if data.get('sentiment') in SENTIMENTS else 'Neutral',
+        'ceo':        (data.get('ceo') or '').strip(),
+        'cfo':        (data.get('cfo') or '').strip(),
+        'ir':         (data.get('ir') or '').strip(),
+        'summary':    (data.get('summary') or '').strip(),
+        'highlights': (data.get('highlights') or '').strip(),
+        'themes':     themes[:6],
+    }
+
+
+def summarize_trends(project, calls):
+    """Synthesise the arc across calls. `calls` is oldest-first summary blocks."""
+    blocks = []
+    for c in calls:
+        blocks.append(
+            f"### {c.get('period') or '?'} — call {c.get('call_date') or '?'}\n"
+            f"Headline: {c.get('headline') or '—'}\n"
+            f"Sentiment: {c.get('sentiment') or '—'}\n"
+            f"Price reaction: {c.get('reaction') or 'n/a'}; "
+            f"since prior call: {c.get('between') or 'n/a'}\n"
+            f"Summary: {c.get('summary') or '—'}\n"
+            f"Highlights: {c.get('highlights') or '—'}"
+        )
+
+    prompt = _fill(trends_prompt(), (
+        ('{name}',      project.get('name') or ''),
+        ('{ticker}',    project.get('ticker') or '—'),
+        ('{count}',     len(calls)),
+        ('{summaries}', '\n\n'.join(blocks)),
+    ))
+
+    data = _structured(prompt, CALL_SYSTEM_PROMPT, _TRENDS_SCHEMA, max_tokens=24000)
+    return {
+        'trends':     [t for t in (data.get('trends') or []) if t.get('title')],
+        'milestones': [m for m in (data.get('milestones') or []) if m.get('title')],
+    }

@@ -87,6 +87,50 @@ def extract_text(raw, filename=''):
         return ''
 
 
+def full_text(raw, filename='', limit=400_000):
+    """The whole document, for summarising rather than just identifying it.
+
+    A long call runs perhaps 60k characters, so the limit is a runaway guard
+    rather than a real constraint — Opus 5's context swallows a full transcript
+    comfortably.
+    """
+    if not raw:
+        return ''
+    low = (filename or '').lower()
+    if low.endswith('.pdf') or raw[:5] == b'%PDF-':
+        try:
+            from pypdf import PdfReader
+            logging.getLogger('pypdf').setLevel(logging.ERROR)
+            reader = PdfReader(io.BytesIO(raw))
+            pages = []
+            for page in reader.pages:
+                try:
+                    pages.append(page.extract_text() or '')
+                except Exception:
+                    continue
+                if sum(len(p) for p in pages) >= limit:
+                    break
+            text = '\n'.join(pages)
+            if text.strip():
+                return text[:limit]
+        except Exception:
+            pass
+    elif low.endswith(('.docx', '.doc')) or raw[:2] == b'PK':
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                xml = zf.read('word/document.xml').decode('utf-8', 'replace')
+            xml = re.sub(r'</w:p>', '\n', xml)
+            text = re.sub(r'<[^>]+>', ' ', xml)
+            if text.strip():
+                return text[:limit]
+        except Exception:
+            pass
+    try:
+        return raw[:limit].decode('utf-8', 'replace')
+    except Exception:
+        return ''
+
+
 # ── Field parsing ───────────────────────────────────────────────────────────
 
 def _find_quarter(text):
