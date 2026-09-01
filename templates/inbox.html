@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inbox — Diligence App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<header class="bg-white border-b border-gray-200 px-6 py-4">
+  <div class="max-w-5xl mx-auto">
+    <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Diligence App</h1>
+    <nav class="flex gap-4 mt-2.5">
+      <a href="/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Collected Ideas</a>
+      <a href="/projects" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Projects</a>
+      <a href="/inbox" class="text-sm font-semibold text-gray-900 border-b-2 border-blue-600 pb-0.5">Inbox</a>
+      <a href="/admin" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Admin</a>
+    </nav>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-6 py-8">
+
+  <!-- How mail gets in -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-baseline justify-between gap-3 flex-wrap">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Forwarding address</p>
+      <div class="flex gap-2">
+        <button onclick="poll()" id="poll-btn"
+          class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60 transition-colors">
+          Check mailbox now
+        </button>
+      </div>
+    </div>
+
+    <p class="text-sm text-gray-600 mt-3 leading-relaxed">
+      {% if imap_ready %}
+        <span class="text-green-700 font-medium">✓ Mailbox polling is on.</span>
+        Forward ideas to the mailbox configured on the Admin page and they appear here.
+      {% else %}
+        <span class="text-amber-600 font-medium">No mailbox configured.</span>
+        Add IMAP details on the Admin page, or point a mail service at the webhook below.
+      {% endif %}
+    </p>
+
+    <details class="mt-3">
+      <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-700">Webhook URL for a mail service</summary>
+      <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+        Point Mailgun, SendGrid, Postmark or CloudMailin at this. It carries the shared
+        secret, so treat it like a password — anyone with the URL can put ideas in your
+        tracker. Rotate it on the Admin page if it leaks.
+      </p>
+      <code id="hook-url" class="block mt-2 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg p-2 break-all text-gray-600"></code>
+    </details>
+  </div>
+
+  <!-- Filters -->
+  <div class="flex items-center gap-2 mt-6 mb-3 flex-wrap">
+    <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide mr-1">Show</span>
+    <div id="filters" class="flex gap-1 flex-wrap"></div>
+  </div>
+
+  <div id="list"></div>
+</main>
+
+<script>
+const WEBHOOK_TOKEN = {{ webhook_token | tojson }};
+const STATUSES = [
+  ['review',  'Needs review'],
+  ['filed',   'Filed'],
+  ['pending', 'Parsing'],
+  ['ignored', 'Not an idea'],
+  ['error',   'Failed'],
+  ['all',     'Everything'],
+];
+
+let emails = [], counts = {}, filter = 'review', editing = new Set();
+
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function apiError(res) {
+  try { return (await res.json()).error || `Failed (${res.status})`; }
+  catch (e) { return `Failed (${res.status})`; }
+}
+
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString(undefined,
+    { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+document.getElementById('hook-url').textContent =
+  `${location.origin}/api/inbox/email?token=${WEBHOOK_TOKEN}`;
+
+async function load() {
+  const res = await fetch(`/api/inbox?status=${encodeURIComponent(filter)}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  emails = data.emails || [];
+  counts = data.counts || {};
+  render();
+}
+
+async function poll() {
+  const btn = document.getElementById('poll-btn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const res = await fetch('/api/inbox/poll', { method: 'POST' });
+    if (!res.ok) { alert(await apiError(res)); return; }
+    const out = await res.json();
+    // Parsing runs after staging, so give it a moment before reloading.
+    setTimeout(load, 1500);
+    btn.textContent = out.new ? `Found ${out.new}` : 'Nothing new';
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Check mailbox now';
+    }, 2500);
+  }
+}
+
+function setFilter(v) { filter = v; editing.clear(); load(); }
+
+const BADGE = {
+  review:  'bg-amber-50 text-amber-700',
+  filed:   'bg-green-50 text-green-700',
+  pending: 'bg-blue-50 text-blue-700',
+  ignored: 'bg-gray-100 text-gray-500',
+  error:   'bg-red-50 text-red-600',
+};
+
+function renderFilters() {
+  document.getElementById('filters').innerHTML = STATUSES.map(([key, label]) => {
+    const n = key === 'all'
+      ? Object.values(counts).reduce((a, b) => a + b, 0)
+      : (counts[key] || 0);
+    return `<button onclick="setFilter('${key}')"
+      class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+        key === filter ? 'bg-blue-600 text-white' : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'}">
+      ${label} <span class="${key === filter ? 'text-blue-100' : 'text-gray-400'}">${n}</span>
+    </button>`;
+  }).join('');
+}
+
+function field(id, label, value, opts) {
+  if (opts) {
+    return `<label class="text-xs text-gray-500">${label}
+      <select id="${id}" class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white">
+        ${opts.map(([v, l]) => `<option value="${v}" ${v === value ? 'selected' : ''}>${l}</option>`).join('')}
+      </select></label>`;
+  }
+  return `<label class="text-xs text-gray-500">${label}
+    <input id="${id}" value="${escHtml(value || '')}"
+      class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" /></label>`;
+}
+
+function render() {
+  renderFilters();
+  const el = document.getElementById('list');
+  if (!emails.length) {
+    el.innerHTML = `<div class="text-center py-16 text-gray-400">
+      <div class="text-4xl mb-3">📥</div>
+      <p class="text-sm">Nothing here. Forward an idea to your mailbox and it turns up
+        parsed, ready to file.</p></div>`;
+    return;
+  }
+
+  el.innerHTML = emails.map(e => {
+    const p = e.parsed || {};
+    const open = editing.has(e.id);
+    return `
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-gray-900">${escHtml(e.subject || '(no subject)')}</h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            ${escHtml(e.from_addr || 'unknown sender')} · ${fmtWhen(e.received_at)} ·
+            <span class="uppercase tracking-wide">${escHtml(e.origin)}</span>
+          </p>
+        </div>
+        <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold ${BADGE[e.status] || BADGE.ignored}">
+          ${escHtml(e.status)}</span>
+      </div>
+
+      ${e.error ? `<p class="text-xs text-red-600 mt-2">${escHtml(e.error)}</p>` : ''}
+
+      ${p.thesis || p.ticker ? `
+        <div class="border-t border-gray-100 mt-3 pt-3">
+          <div class="flex items-baseline gap-3 flex-wrap">
+            <span class="font-mono font-semibold text-gray-900">${escHtml(p.ticker || '—')}</span>
+            <span class="text-sm text-gray-600">${escHtml(p.company || '')}</span>
+            <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+              p.direction === 'short' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}">
+              ${escHtml((p.direction || 'long').toUpperCase())}</span>
+            <span class="text-[11px] text-gray-400">confidence ${escHtml(p.confidence || '—')}</span>
+          </div>
+          <p class="text-sm text-gray-700 leading-relaxed mt-2">${escHtml(p.thesis || '')}</p>
+          ${p.notes ? `<p class="text-xs text-amber-700 mt-2">⚠ ${escHtml(p.notes)}</p>` : ''}
+        </div>` : ''}
+
+      ${(e.attachments || []).length ? `
+        <div class="flex flex-wrap gap-2 mt-3">${e.attachments.map(a => `
+          <a href="/api/inbox/attachments/${a.id}" target="_blank"
+            class="px-2 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-colors">
+            📎 ${escHtml(a.filename)}</a>`).join('')}</div>` : ''}
+
+      ${open ? `
+        <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mt-3">
+          ${field(`t-${e.id}`, 'Ticker', p.ticker)}
+          ${field(`c-${e.id}`, 'Company', p.company)}
+          ${field(`d-${e.id}`, 'Direction', p.direction || 'long', [['long', 'Long'], ['short', 'Short']])}
+          ${field(`a-${e.id}`, 'Asset class', p.asset_class || 'public_equity',
+                  [['public_equity', 'Public Equity'], ['private_equity', 'Private Equity'],
+                   ['bond', 'Bond'], ['real_estate', 'Real Estate']])}
+          ${field(`s-${e.id}`, 'Source', p.source_name)}
+          <label class="text-xs text-gray-500 w-full">Thesis
+            <textarea id="th-${e.id}" rows="3"
+              class="block mt-1 w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">${escHtml(p.thesis || '')}</textarea></label>
+          <button onclick="saveParsed(${e.id})"
+            class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+        </div>` : ''}
+
+      <div class="flex gap-3 mt-3 flex-wrap">
+        ${e.status === 'filed'
+          ? `<a href="/ideas/${e.idea_id}" class="text-xs text-blue-600 hover:text-blue-700">View the idea →</a>`
+          : `<button onclick="fileIt(${e.id})"
+               class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">File as idea</button>`}
+        <button onclick="toggleEdit(${e.id})"
+          class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${open ? 'Cancel' : 'Edit'}</button>
+        <button onclick="reparse(${e.id})"
+          class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Re-parse</button>
+        <button onclick="remove(${e.id})"
+          class="text-xs text-gray-300 hover:text-red-500 transition-colors ml-auto">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleEdit(id) {
+  editing.has(id) ? editing.delete(id) : editing.add(id);
+  render();
+}
+
+async function saveParsed(id) {
+  const body = {
+    ticker:      document.getElementById(`t-${id}`).value,
+    company:     document.getElementById(`c-${id}`).value,
+    direction:   document.getElementById(`d-${id}`).value,
+    asset_class: document.getElementById(`a-${id}`).value,
+    source_name: document.getElementById(`s-${id}`).value,
+    thesis:      document.getElementById(`th-${id}`).value,
+  };
+  const res = await fetch(`/api/inbox/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  editing.delete(id);
+  await load();
+}
+
+async function fileIt(id) {
+  const res = await fetch(`/api/inbox/${id}/file`, { method: 'POST' });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  await load();
+}
+
+async function reparse(id) {
+  const res = await fetch(`/api/inbox/${id}/reparse`, { method: 'POST' });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  await load();
+}
+
+async function remove(id) {
+  if (!confirm('Delete this email and its attachments?')) return;
+  await fetch(`/api/inbox/${id}`, { method: 'DELETE' });
+  await load();
+}
+
+load();
+</script>
+</body>
+</html>

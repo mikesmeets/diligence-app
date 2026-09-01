@@ -308,6 +308,46 @@ _CREATE_TRANSCRIPTS = f"""
     )
 """
 
+# Emailed ideas land here first, never straight into `ideas`. Two reasons: an
+# idea row needs a ticker, thesis, direction and asset class and email often
+# won't yield all four, and everything here arrived from outside the app, so it
+# gets looked at before it becomes part of the tracker.
+_CREATE_INBOX = f"""
+    CREATE TABLE IF NOT EXISTS inbox_emails (
+        id         {_PK},
+        message_id  TEXT,
+        origin      TEXT    NOT NULL,
+        from_addr   TEXT,
+        to_addr     TEXT,
+        subject     TEXT,
+        body        TEXT,
+        received_at TEXT,
+        status      TEXT    NOT NULL,
+        error       TEXT,
+        parsed      TEXT,
+        idea_id     INTEGER,
+        created_at  TEXT    NOT NULL
+    )
+"""
+
+# Dedupe on the RFC Message-ID. A webhook retry and a later IMAP sweep can both
+# deliver the same mail, and without this you get the idea filed twice.
+_CREATE_INBOX_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS inbox_emails_message_id
+    ON inbox_emails (message_id)
+"""
+
+_CREATE_INBOX_FILES = f"""
+    CREATE TABLE IF NOT EXISTS inbox_attachments (
+        id         {_PK},
+        email_id   INTEGER NOT NULL,
+        filename   TEXT    NOT NULL,
+        object_key TEXT    NOT NULL,
+        size_bytes INTEGER,
+        created_at TEXT    NOT NULL
+    )
+"""
+
 _CREATE_DOC_TYPES = f"""
     CREATE TABLE IF NOT EXISTS doc_types (
         id   {_PK},
@@ -419,6 +459,9 @@ def init():
         cur.execute(_CREATE_NOTES)
         cur.execute(_CREATE_NOTE_FILES)
         cur.execute(_CREATE_NOTE_SOURCES)
+        cur.execute(_CREATE_INBOX)
+        cur.execute(_CREATE_INBOX_INDEX)
+        cur.execute(_CREATE_INBOX_FILES)
         cur.execute(_CREATE_DOC_TYPES)
         cur.execute(_CREATE_TRANSCRIPTS)
         cur.execute(_CREATE_DOCUMENTS)

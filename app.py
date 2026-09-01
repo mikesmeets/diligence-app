@@ -14,6 +14,7 @@ import ai
 import alphavantage
 import db
 import fmp
+import inbox
 import storage
 import transcripts as tx
 import xlsxmeta
@@ -2847,6 +2848,17 @@ def get_settings():
         'fmp_key_source':  fmp.key_source(),
         'av_key_source':   alphavantage.key_source(),
         'av_usage':        alphavantage.usage(),
+        # Mailbox settings are readable; the password never is.
+        'imap_host':         inbox.imap_config()['host'],
+        'imap_port':         inbox.imap_config()['port'],
+        'imap_user':         inbox.imap_config()['user'],
+        'imap_folder':       inbox.imap_config()['folder'],
+        'imap_ready':        inbox.imap_ready(),
+        'imap_source':       inbox.imap_source(),
+        'imap_enabled':      (db.get_setting('imap_enabled') or '1') == '1',
+        'imap_poll_seconds': int(db.get_setting('imap_poll_seconds') or 300),
+        'inbox_token':        inbox.token(),
+        'inbox_token_source': inbox.token_source(),
         'model':           ai.model(),
         'models':          [{'id': m, 'label': l} for m, l in ai.MODELS],
         'effort':          ai.effort(),
@@ -2887,6 +2899,19 @@ def save_settings():
         # fifteen minutes, so both have to go or a new key looks inert.
         alphavantage.clear_cache()
         _clear_tearsheet_cache()
+
+    # Mailbox settings. The password follows the write-only rule of every other
+    # credential: absent means leave it, the sentinel clears it.
+    for key in ('imap_host', 'imap_user', 'imap_folder', 'imap_port',
+                'imap_poll_seconds', 'imap_enabled'):
+        if key in data:
+            db.set_setting(key, (str(data.get(key) or '')).strip())
+    if 'imap_password' in data:
+        value = (data.get('imap_password') or '').strip()
+        if value == '__CLEAR__':
+            db.set_setting('imap_password', '')
+        elif value:
+            db.set_setting('imap_password', value)
 
     if data.get('model') in dict(ai.MODELS):
         db.set_setting('ai_model', data['model'])
@@ -3221,6 +3246,396 @@ def _trend_data(project_id):
         data = {}
     data['generated_at'] = row.get('transcript_trends_generated_at')
     return data
+
+
+# ── Emailed ideas ────────────────────────────────────────────────────────────
+#
+# Mail arrives by webhook or IMAP, is staged in inbox_emails, parsed by Claude,
+# and filed as an idea only when the parse is confident. Everything else waits
+# for a look. The staging step is the whole point: this is the one path into the
+# tracker that starts outside the app.
+
+# A confident parse needs all three, or there is nothing to file.
+def _fileable(parsed):
+    return bool(parsed and parsed.get('is_idea') and parsed.get('ticker')
+                and (parsed.get('thesis') or '').strip()
+                and parsed.get('confidence') == 'high')
+
+
+def _source_id_for(name):
+    """Match an existing source by name, creating it if it's new."""
+    name = (name or '').strip()
+    if not name:
+        return None
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT id FROM sources WHERE LOWER(name) = {db.PH}', (name.lower(),))
+        row = db.to_dict(cur.fetchone())
+        if row:
+            return row['id']
+        if db.IS_PG:
+            cur.execute(
+                f'INSERT INTO sources (name) VALUES ({db.PH}) '
+                f'ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id', (name,))
+            return (db.to_dict(cur.fetchone()) or {}).get('id')
+        cur.execute(f'INSERT OR IGNORE INTO sources (name) VALUES ({db.PH})', (name,))
+        cur.execute(f'SELECT id FROM sources WHERE name = {db.PH}', (name,))
+        return (db.to_dict(cur.fetchone()) or {}).get('id')
+
+
+def _store_inbox_email(mail):
+    """Stage one email. Returns (row_id, is_new) — duplicates are skipped."""
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT id FROM inbox_emails WHERE message_id = {db.PH}',
+                    (mail['message_id'],))
+        existing = db.to_dict(cur.fetchone())
+        if existing:
+            return existing['id'], False
+
+        email_id = db.insert_id(
+            cur, 'inbox_emails',
+            ('message_id', 'origin', 'from_addr', 'to_addr', 'subject', 'body',
+             'received_at', 'status', 'created_at'),
+            (mail['message_id'], mail['origin'], mail['from_addr'], mail['to_addr'],
+             mail['subject'], mail['body'], mail['received_at'], 'pending', now),
+        )
+
+    for filename, raw in (mail.get('attachments') or []):
+        if not raw or len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
+            continue
+        try:
+            key = storage.upload(raw, filename, parts=['inbox', mail['message_id'][:40]])
+        except Exception as exc:
+            app.logger.info('Could not store attachment %s: %s', filename, exc)
+            continue
+        with db.get_conn() as conn:
+            db.insert_id(
+                db.cursor(conn), 'inbox_attachments',
+                ('email_id', 'filename', 'object_key', 'size_bytes', 'created_at'),
+                (email_id, filename, key, len(raw), now),
+            )
+    return email_id, True
+
+
+def _process_inbox_email(email_id):
+    """Parse one staged email and file it if the parse is confident."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT id, from_addr, subject, body FROM inbox_emails WHERE id = {db.PH}',
+            (email_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return
+
+    try:
+        parsed = ai.parse_idea_email(row['from_addr'], row['subject'], row['body'])
+    except Exception as exc:
+        app.logger.exception('Could not parse inbox email %s', email_id)
+        with db.get_conn() as conn:
+            db.cursor(conn).execute(
+                f'UPDATE inbox_emails SET status = {db.PH}, error = {db.PH} WHERE id = {db.PH}',
+                ('error', f'{type(exc).__name__}: {exc}', email_id))
+        return
+
+    status = 'review'
+    idea_id = None
+    if not parsed.get('is_idea'):
+        status = 'ignored'
+    elif _fileable(parsed):
+        try:
+            idea_id = _file_inbox_idea(email_id, parsed)
+            status = 'filed'
+        except Exception as exc:
+            app.logger.exception('Could not file inbox email %s', email_id)
+            parsed['notes'] = ((parsed.get('notes') or '') + f' Filing failed: {exc}').strip()
+
+    with db.get_conn() as conn:
+        db.cursor(conn).execute(
+            f'UPDATE inbox_emails SET status = {db.PH}, parsed = {db.PH}, idea_id = {db.PH}, '
+            f'error = NULL WHERE id = {db.PH}',
+            (status, json.dumps(parsed), idea_id, email_id))
+
+
+def _file_inbox_idea(email_id, parsed):
+    """Create the idea row, carrying the first attachment across if there is one."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT received_at FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        row = db.to_dict(cur.fetchone()) or {}
+        cur.execute(
+            f'SELECT filename, object_key FROM inbox_attachments WHERE email_id = {db.PH} '
+            f'ORDER BY id LIMIT 1', (email_id,))
+        attachment = db.to_dict(cur.fetchone())
+
+    ticker = (parsed.get('ticker') or '').upper()
+    day = (row.get('received_at') or datetime.now().isoformat())[:10]
+    price = None
+    try:
+        price = fetch_historical_price(ticker, day)
+    except Exception:
+        pass   # a missing price shouldn't block filing
+
+    source_id = _source_id_for(parsed.get('source_name'))
+    now = datetime.now().isoformat()
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        idea_id = db.insert_id(
+            cur, 'ideas',
+            ('ticker', 'idea_date', 'idea_price', 'initial_date', 'initial_price',
+             'current_price', 'thesis', 'direction', 'asset_class', 'source_id',
+             'created_at', 'attachment_name', 'attachment_key'),
+            (ticker, day, price, day, price, price, parsed.get('thesis'),
+             parsed.get('direction') or 'long', parsed.get('asset_class') or 'public_equity',
+             source_id, now,
+             (attachment or {}).get('filename'), (attachment or {}).get('object_key')),
+        )
+    return idea_id
+
+
+def _ingest(mails):
+    """Stage and process a batch. Returns a small summary for the caller."""
+    staged, duplicates = [], 0
+    for mail in mails:
+        email_id, is_new = _store_inbox_email(mail)
+        if is_new:
+            staged.append(email_id)
+        else:
+            duplicates += 1
+    for email_id in staged:
+        _process_inbox_email(email_id)
+    return {'received': len(mails), 'new': len(staged), 'duplicates': duplicates}
+
+
+@app.route('/api/inbox/email', methods=['POST'])
+def inbox_webhook():
+    """Public endpoint the mail service posts to. Guarded by a shared secret.
+
+    The secret may arrive as a header or a query parameter, because the
+    providers differ in what they let you configure.
+    """
+    supplied = (request.headers.get('X-Inbox-Token')
+                or request.args.get('token')
+                or (request.form or {}).get('token'))
+    if not inbox.token_ok(supplied):
+        # Deliberately terse: a public endpoint shouldn't explain itself.
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        payload = request.get_json(silent=True)
+        mail = inbox.normalize_webhook(request.form, request.files, payload)
+    except Exception as exc:
+        app.logger.exception('Malformed inbound email')
+        return jsonify({'error': f'Could not read that email: {exc}'}), 400
+
+    if not (mail['subject'] or mail['body']):
+        return jsonify({'error': 'Empty email'}), 400
+
+    # Parsing takes a few seconds and mail services retry on a slow response, so
+    # stage synchronously and let the model run in the background.
+    email_id, is_new = _store_inbox_email(mail)
+    if is_new:
+        threading.Thread(target=_process_inbox_email, args=(email_id,), daemon=True).start()
+    return jsonify({'ok': True, 'id': email_id, 'duplicate': not is_new}), 202
+
+
+@app.route('/api/inbox/test', methods=['POST'])
+def test_inbox_mailbox():
+    """Prove the mailbox answers, rather than only that fields are filled in."""
+    try:
+        return jsonify({'ok': True, 'sample': inbox.test_imap()})
+    except Exception as exc:
+        return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 502
+
+
+@app.route('/api/inbox/rotate-token', methods=['POST'])
+def rotate_inbox_token():
+    try:
+        value = inbox.rotate_token()
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'token': value, 'source': inbox.token_source()})
+
+
+@app.route('/api/inbox/poll', methods=['POST'])
+def inbox_poll():
+    if not inbox.imap_ready():
+        return jsonify({'error': 'IMAP is not configured. Add the mailbox on the Admin page.'}), 503
+    try:
+        mails = inbox.fetch_imap()
+    except Exception as exc:
+        return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 502
+    return jsonify(_ingest(mails))
+
+
+@app.route('/api/inbox', methods=['GET'])
+def list_inbox():
+    status = (request.args.get('status') or '').strip()
+    where, params = '', []
+    if status and status != 'all':
+        where = f'WHERE status = {db.PH}'
+        params.append(status)
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT id, message_id, origin, from_addr, subject, received_at, status, '
+            f'error, parsed, idea_id, created_at FROM inbox_emails {where} '
+            f'ORDER BY COALESCE(received_at, created_at) DESC, id DESC LIMIT 200', params)
+        rows = db.to_dicts(cur.fetchall())
+        cur.execute('SELECT email_id, id, filename, size_bytes FROM inbox_attachments ORDER BY id')
+        by_email = {}
+        for att in db.to_dicts(cur.fetchall()):
+            by_email.setdefault(att['email_id'], []).append(att)
+        cur.execute('SELECT status, COUNT(*) AS n FROM inbox_emails GROUP BY status')
+        counts = {r['status']: r['n'] for r in db.to_dicts(cur.fetchall())}
+
+    for row in rows:
+        try:
+            row['parsed'] = json.loads(row['parsed']) if row.get('parsed') else None
+        except ValueError:
+            row['parsed'] = None
+        row['attachments'] = by_email.get(row['id'], [])
+    return jsonify({'emails': rows, 'counts': counts,
+                    'imap_ready': inbox.imap_ready()})
+
+
+@app.route('/api/inbox/<int:email_id>', methods=['PATCH'])
+def update_inbox_email(email_id):
+    """Correct the parse before filing it."""
+    data = request.get_json(force=True)
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT parsed FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        parsed = json.loads(row.get('parsed') or '{}')
+    except ValueError:
+        parsed = {}
+
+    for field in ('ticker', 'company', 'direction', 'asset_class', 'thesis',
+                  'source_name', 'notes'):
+        if field in data:
+            parsed[field] = (data.get(field) or '').strip()
+    parsed['ticker'] = (parsed.get('ticker') or '').upper()
+    parsed.setdefault('is_idea', True)
+
+    with db.get_conn() as conn:
+        db.cursor(conn).execute(
+            f'UPDATE inbox_emails SET parsed = {db.PH} WHERE id = {db.PH}',
+            (json.dumps(parsed), email_id))
+    return jsonify(parsed)
+
+
+@app.route('/api/inbox/<int:email_id>/file', methods=['POST'])
+def file_inbox_email(email_id):
+    """File a staged email as an idea, using whatever the parse now holds."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT parsed, status FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    if row['status'] == 'filed':
+        return jsonify({'error': 'Already filed'}), 409
+    try:
+        parsed = json.loads(row.get('parsed') or '{}')
+    except ValueError:
+        parsed = {}
+    if not parsed.get('ticker') or not (parsed.get('thesis') or '').strip():
+        return jsonify({'error': 'Needs a ticker and a thesis before it can be filed.'}), 400
+
+    try:
+        idea_id = _file_inbox_idea(email_id, parsed)
+    except Exception as exc:
+        return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 500
+    with db.get_conn() as conn:
+        db.cursor(conn).execute(
+            f'UPDATE inbox_emails SET status = {db.PH}, idea_id = {db.PH} WHERE id = {db.PH}',
+            ('filed', idea_id, email_id))
+    return jsonify({'ok': True, 'idea_id': idea_id})
+
+
+@app.route('/api/inbox/<int:email_id>/reparse', methods=['POST'])
+def reparse_inbox_email(email_id):
+    if not ai.enabled():
+        return jsonify({'error': 'No Anthropic API key. Add one on the Admin page.'}), 503
+    _process_inbox_email(email_id)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/inbox/<int:email_id>', methods=['DELETE'])
+def delete_inbox_email(email_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT object_key FROM inbox_attachments WHERE email_id = {db.PH}',
+                    (email_id,))
+        keys = [r['object_key'] for r in db.to_dicts(cur.fetchall())]
+        cur.execute(f'DELETE FROM inbox_attachments WHERE email_id = {db.PH}', (email_id,))
+        cur.execute(f'DELETE FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+    _delete_keys(keys)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/inbox/attachments/<int:attachment_id>')
+def download_inbox_attachment(attachment_id):
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT filename, object_key FROM inbox_attachments WHERE id = {db.PH}',
+            (attachment_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return _redirect_to_file(row['object_key'], row['filename'])
+
+
+@app.route('/inbox')
+def inbox_page():
+    return render_template('inbox.html',
+                           webhook_token=inbox.token(),
+                           token_source=inbox.token_source(),
+                           imap_ready=inbox.imap_ready())
+
+
+# ── IMAP poller ──────────────────────────────────────────────────────────────
+
+def _poll_interval():
+    try:
+        return max(60, int(db.get_setting('imap_poll_seconds') or 300))
+    except (TypeError, ValueError):
+        return 300
+
+
+def _imap_loop():
+    """Check the mailbox on a timer. Silent when IMAP isn't configured."""
+    while True:
+        try:
+            time.sleep(_poll_interval())
+            if not inbox.imap_ready():
+                continue
+            if (db.get_setting('imap_enabled') or '1') != '1':
+                continue
+            result = _ingest(inbox.fetch_imap())
+            if result['new']:
+                app.logger.info('Inbox: staged %s new email(s) from IMAP', result['new'])
+        except Exception:
+            # A poller that dies on one bad mailbox response stops being a
+            # poller, so swallow and go round again.
+            app.logger.exception('IMAP poll failed')
+
+
+def start_inbox_poller():
+    if os.environ.get('DISABLE_INBOX_POLLER') == '1':
+        return
+    threading.Thread(target=_imap_loop, daemon=True).start()
+
+
+start_inbox_poller()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

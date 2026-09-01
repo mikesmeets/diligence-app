@@ -16,6 +16,7 @@
       <nav class="flex gap-4 mt-1.5">
         <a href="/" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Collected Ideas</a>
         <a href="/projects" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Projects</a>
+        <a href="/inbox" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">Inbox</a>
         <a href="/admin" class="text-sm font-semibold text-gray-900 border-b-2 border-blue-600 pb-0.5">Admin</a>
       </nav>
     </div>
@@ -158,6 +159,79 @@
       actually said. Use it when the Consensus block falls back and the reason isn't
       obvious. Costs one Alpha Vantage call.
     </p>
+  </div>
+
+
+  <!-- Emailed ideas -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+      Emailed Ideas — Mailbox
+    </p>
+
+    <div id="imap-status" class="text-sm mb-3"></div>
+
+    <div class="grid md:grid-cols-2 gap-3">
+      <label class="text-xs text-gray-500">IMAP host
+        <input id="f-imap-host" placeholder="imap.gmail.com" autocomplete="off"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">Port
+        <input id="f-imap-port" type="number" placeholder="993"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">Username
+        <input id="f-imap-user" placeholder="ideas@example.com" autocomplete="off"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">App password
+        <input id="f-imap-pass" type="password" placeholder="write-only" autocomplete="off"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">Folder
+        <input id="f-imap-folder" placeholder="INBOX"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">Check every (seconds)
+        <input id="f-imap-poll" type="number" min="60" placeholder="300"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" /></label>
+    </div>
+
+    <div class="flex gap-2 mt-3 flex-wrap items-center">
+      <button onclick="saveImap()"
+        class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save mailbox</button>
+      <button id="imap-test" onclick="testImap()"
+        class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Test connection</button>
+      <label class="text-xs text-gray-500 flex items-center gap-1.5 ml-2">
+        <input id="f-imap-enabled" type="checkbox" onchange="saveAll()" class="rounded" />
+        Polling on
+      </label>
+    </div>
+    <p id="imap-test-result" class="text-xs mt-2"></p>
+
+    <p class="text-xs text-amber-700 mt-3 leading-relaxed">
+      Use a mailbox dedicated to this. IMAP grants read access to everything in the
+      account, so pointing it at your personal inbox hands the app all of your mail.
+      Forward ideas into the dedicated mailbox instead.
+    </p>
+    <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+      Gmail needs an app password with 2-step verification on — your normal password will
+      be refused. The password is write-only here; setting
+      <code class="font-mono text-gray-500">INBOX_IMAP_PASSWORD</code> on Railway takes
+      precedence and keeps it out of the database.
+    </p>
+  </div>
+
+  <!-- Webhook secret -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+      Emailed Ideas — Webhook
+    </p>
+    <p class="text-xs text-gray-400 leading-relaxed">
+      For a mail service (Mailgun, SendGrid, Postmark, CloudMailin) posting straight to the
+      app. The URL below carries the shared secret — anyone holding it can file ideas into
+      your tracker, so treat it as a password and rotate it if it leaks.
+    </p>
+    <code id="admin-hook-url" class="block mt-3 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg p-2 break-all text-gray-600"></code>
+    <div class="flex gap-2 mt-2 flex-wrap">
+      <button onclick="rotateToken()"
+        class="px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors">Rotate secret</button>
+      <span id="token-note" class="text-xs text-gray-400 self-center"></span>
+    </div>
   </div>
 
   <!-- Model template -->
@@ -468,6 +542,80 @@ async function diagnose() {
   }
 }
 
+// ── Emailed ideas ─────────────────────────────────────────────────────────
+function renderImapStatus(s) {
+  const el = document.getElementById('imap-status');
+  if (s.imap_source === 'env') {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ Using INBOX_IMAP_* environment variables.</span>
+      <span class="text-gray-400">Those take precedence over anything saved here.</span>`;
+  } else if (s.imap_ready) {
+    el.innerHTML = `<span class="text-green-700 font-medium">✓ Mailbox configured.</span>
+      <span class="text-gray-400">Polling every ${s.imap_poll_seconds || 300}s.</span>`;
+  } else {
+    el.innerHTML = `<span class="text-amber-600 font-medium">No mailbox set.</span>
+      <span class="text-gray-400">Emailed ideas are off until you add one, or use the webhook below.</span>`;
+  }
+}
+
+async function saveImap() {
+  const body = {
+    imap_host:   document.getElementById('f-imap-host').value.trim(),
+    imap_port:   document.getElementById('f-imap-port').value.trim(),
+    imap_user:   document.getElementById('f-imap-user').value.trim(),
+    imap_folder: document.getElementById('f-imap-folder').value.trim(),
+    imap_poll_seconds: document.getElementById('f-imap-poll').value.trim(),
+  };
+  const pass = document.getElementById('f-imap-pass').value.trim();
+  if (pass) body.imap_password = pass;
+  const r = await post(body);
+  if (r) {
+    document.getElementById('f-imap-pass').value = '';
+    status('Mailbox saved', 'green');
+    load();
+  }
+}
+
+async function testImap() {
+  const out = document.getElementById('imap-test-result');
+  const btn = document.getElementById('imap-test');
+  out.textContent = 'Connecting…';
+  out.className = 'text-xs mt-2 text-gray-400';
+  btn.disabled = true;
+  try {
+    const res  = await fetch('/api/inbox/test', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      const d = data.sample;
+      out.textContent = `✓ Signed in to ${d.user} at ${d.host} — ${d.unseen} unread in ${d.folder}.`;
+      out.className = 'text-xs mt-2 text-green-600';
+    } else {
+      out.textContent = data.error || `Failed (${res.status})`;
+      out.className = 'text-xs mt-2 text-red-600';
+    }
+  } catch (e) {
+    out.textContent = 'Could not reach the server.';
+    out.className = 'text-xs mt-2 text-red-600';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderHookUrl(token, source) {
+  document.getElementById('admin-hook-url').textContent =
+    `${location.origin}/api/inbox/email?token=${token}`;
+  document.getElementById('token-note').textContent =
+    source === 'env' ? 'Set by INBOX_TOKEN — rotate it on Railway, not here.' : '';
+}
+
+async function rotateToken() {
+  if (!confirm('Rotate the webhook secret? The old URL stops working immediately.')) return;
+  const res = await fetch('/api/inbox/rotate-token', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || 'Could not rotate the secret.'); return; }
+  renderHookUrl(data.token, data.source);
+  status('Webhook secret rotated — update it at your mail service', 'green');
+}
+
 async function load() {
   const s = await (await fetch('/api/settings')).json();
   defaults = s.default_prompts;
@@ -476,6 +624,14 @@ async function load() {
   renderFmpStatus(s.fmp_key_source);
   renderAvStatus(s.av_key_source);
   renderAvUsage(s.av_usage);
+  renderImapStatus(s);
+  renderHookUrl(s.inbox_token, s.inbox_token_source);
+  document.getElementById('f-imap-host').value    = s.imap_host || '';
+  document.getElementById('f-imap-port').value    = s.imap_port || 993;
+  document.getElementById('f-imap-user').value    = s.imap_user || '';
+  document.getElementById('f-imap-folder').value  = s.imap_folder || 'INBOX';
+  document.getElementById('f-imap-poll').value    = s.imap_poll_seconds || 300;
+  document.getElementById('f-imap-enabled').checked = s.imap_enabled !== false;
   document.getElementById('system-prompt').textContent = s.system_prompt;
 
   const sel = document.getElementById('f-model');
@@ -560,11 +716,13 @@ async function post(body) {
 }
 
 async function saveAll() {
+  // Keep the polling switch in step with the model/effort selects it shares.
   const prompts = {};
   FIELDS.forEach(f => { prompts[f] = document.getElementById(`p-${f}`).value; });
   const r = await post({
     model:   document.getElementById('f-model').value,
     effort:  document.getElementById('f-effort').value,
+    imap_enabled: document.getElementById('f-imap-enabled').checked ? '1' : '0',
     prompts,
   });
   if (r) { clearDirty(); status('Saved', 'green'); }
