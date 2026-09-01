@@ -180,9 +180,48 @@ def imap_config():
         'host':     get('INBOX_IMAP_HOST', 'imap_host'),
         'port':     int(get('INBOX_IMAP_PORT', 'imap_port', '993') or 993),
         'user':     get('INBOX_IMAP_USER', 'imap_user'),
-        'password': get('INBOX_IMAP_PASSWORD', 'imap_password'),
+        # Google shows app passwords as four space-separated groups, and that is
+        # how they get copied. Strip every space rather than only the ends, or a
+        # correctly-copied password is rejected as a bad credential.
+        'password': re.sub(r'\s+', '', get('INBOX_IMAP_PASSWORD', 'imap_password')),
         'folder':   get('INBOX_IMAP_FOLDER', 'imap_folder', 'INBOX'),
     }
+
+
+def _login_hint(exc, cfg):
+    """Turn an IMAP failure into something actionable.
+
+    Gmail answers almost every credential problem with the same opaque
+    'Invalid credentials' string, so the likely causes are spelled out rather
+    than left for the reader to guess between.
+    """
+    raw = getattr(exc, 'args', [exc])[0] if getattr(exc, 'args', None) else exc
+    # imaplib hands back bytes; str() on those yields "b'...'", which is what
+    # would otherwise be shown to the user.
+    if isinstance(raw, bytes):
+        raw = raw.decode('utf-8', 'replace')
+    raw = str(raw)
+    low = raw.lower()
+    # Decide on the host alone. Google's error text carries a support URL
+    # containing "google", so matching the message would call every server Gmail.
+    host = (cfg.get('host') or '').lower()
+    gmail = 'gmail' in host or 'googlemail' in host
+
+    if 'authenticationfailed' in low or 'invalid credentials' in low or 'auth' in low:
+        if gmail:
+            return (
+                'Gmail rejected the sign-in. In order of likelihood: you used your normal '
+                'password instead of a 16-character app password; 2-Step Verification is off, '
+                'so app passwords cannot be created; IMAP is disabled under Gmail Settings → '
+                'Forwarding and POP/IMAP; or this is a Workspace account whose admin blocks '
+                'app passwords. The username must be the full address. '
+                f'Google said: {raw[:200]}'
+            )
+        return f'The mail server rejected the sign-in. It said: {raw[:200]}'
+    if 'imap' in low and ('disabled' in low or 'not enabled' in low):
+        return ('IMAP is switched off for this mailbox. In Gmail: Settings → '
+                'Forwarding and POP/IMAP → Enable IMAP.')
+    return f'{type(exc).__name__}: {raw[:200]}'
 
 
 def imap_ready():
@@ -237,7 +276,10 @@ def fetch_imap(limit=25, mark_seen=True):
     out = []
     conn = imaplib.IMAP4_SSL(cfg['host'], cfg['port'])
     try:
-        conn.login(cfg['user'], cfg['password'])
+        try:
+            conn.login(cfg['user'], cfg['password'])
+        except imaplib.IMAP4.error as exc:
+            raise RuntimeError(_login_hint(exc, cfg)) from exc
         conn.select(cfg['folder'])
         status, data = conn.search(None, 'UNSEEN')
         if status != 'OK':
@@ -285,7 +327,10 @@ def test_imap():
         raise RuntimeError('IMAP is not configured.')
     conn = imaplib.IMAP4_SSL(cfg['host'], cfg['port'])
     try:
-        conn.login(cfg['user'], cfg['password'])
+        try:
+            conn.login(cfg['user'], cfg['password'])
+        except imaplib.IMAP4.error as exc:
+            raise RuntimeError(_login_hint(exc, cfg)) from exc
         status, _ = conn.select(cfg['folder'], readonly=True)
         if status != 'OK':
             raise RuntimeError(f'Signed in, but the folder "{cfg["folder"]}" could not be opened.')

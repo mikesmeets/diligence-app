@@ -2907,7 +2907,9 @@ def save_settings():
         if key in data:
             db.set_setting(key, (str(data.get(key) or '')).strip())
     if 'imap_password' in data:
-        value = (data.get('imap_password') or '').strip()
+        # Strip all whitespace, not just the ends: app passwords are displayed
+        # in four groups and get pasted with the spaces still in them.
+        value = re.sub(r'\s+', '', data.get('imap_password') or '')
         if value == '__CLEAR__':
             db.set_setting('imap_password', '')
         elif value:
