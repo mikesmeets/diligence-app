@@ -15,6 +15,7 @@ import alphavantage
 import db
 import fmp
 import inbox
+import mailpdf
 import storage
 import transcripts as tx
 import xlsxmeta
@@ -3361,17 +3362,59 @@ def _process_inbox_email(email_id):
             (status, json.dumps(parsed), idea_id, email_id))
 
 
+def _email_pdf_for(email_id, ticker, day):
+    """Render the staged email as a PDF and store it under the idea's folder.
+
+    Returns (filename, object_key), or (None, None) if it could not be produced —
+    a PDF failure must not stop the idea being filed.
+    """
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT message_id, from_addr, to_addr, subject, body, received_at '
+            f'FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        mail = db.to_dict(cur.fetchone())
+        cur.execute(
+            f'SELECT filename, object_key FROM inbox_attachments WHERE email_id = {db.PH} '
+            f'ORDER BY id', (email_id,))
+        rows = db.to_dicts(cur.fetchall())
+    if not mail:
+        return None, None
+
+    # Pull the originals back so any PDFs among them can be merged in.
+    attachments = []
+    for att in rows:
+        try:
+            attachments.append((att['filename'], storage.read(att['object_key'])))
+        except Exception:
+            app.logger.info('Could not read attachment %s for the email PDF', att['filename'])
+
+    try:
+        raw = mailpdf.render(mail, attachments)
+        name = mailpdf.filename_for(mail, ticker)
+    except Exception:
+        app.logger.exception('Could not render the email as a PDF')
+        return None, None
+
+    info, err = _store_bytes(raw, name, parts=_idea_folder(day, ticker))
+    if err:
+        app.logger.info('Could not store the email PDF for inbox email %s', email_id)
+        return None, None
+    return info['filename'], info['object_key']
+
+
 def _file_inbox_idea(email_id, parsed):
-    """Create the idea row, carrying the first attachment across if there is one."""
+    """Create the idea row, attaching the email itself as a PDF.
+
+    The email is the source document, so it travels with the idea rather than
+    living only in the inbox — where deleting the row would take it with it. Any
+    PDFs that came attached are merged into the same file.
+    """
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
             f'SELECT received_at FROM inbox_emails WHERE id = {db.PH}', (email_id,))
         row = db.to_dict(cur.fetchone()) or {}
-        cur.execute(
-            f'SELECT filename, object_key FROM inbox_attachments WHERE email_id = {db.PH} '
-            f'ORDER BY id LIMIT 1', (email_id,))
-        attachment = db.to_dict(cur.fetchone())
 
     ticker = (parsed.get('ticker') or '').upper()
     day = (row.get('received_at') or datetime.now().isoformat())[:10]
@@ -3380,6 +3423,8 @@ def _file_inbox_idea(email_id, parsed):
         price = fetch_historical_price(ticker, day)
     except Exception:
         pass   # a missing price shouldn't block filing
+
+    pdf_name, pdf_key = _email_pdf_for(email_id, ticker, day)
 
     source_id = _source_id_for(parsed.get('source_name'))
     now = datetime.now().isoformat()
@@ -3392,8 +3437,7 @@ def _file_inbox_idea(email_id, parsed):
              'created_at', 'attachment_name', 'attachment_key'),
             (ticker, day, price, day, price, price, parsed.get('thesis'),
              parsed.get('direction') or 'long', parsed.get('asset_class') or 'public_equity',
-             source_id, now,
-             (attachment or {}).get('filename'), (attachment or {}).get('object_key')),
+             source_id, now, pdf_name, pdf_key),
         )
     return idea_id
 
