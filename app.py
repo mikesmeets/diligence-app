@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify, render_template
 from werkzeug.exceptions import HTTPException
 import yfinance as yf
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
 import ai
 import alphavantage
@@ -3682,6 +3683,158 @@ def start_inbox_poller():
 
 
 start_inbox_poller()
+
+
+# ── Filling the add-idea form from an attachment ─────────────────────────────
+#
+# Returns field values for the modal to drop in. Nothing is saved: the user
+# still reviews the form and presses Add, so a bad read costs a correction
+# rather than a junk row.
+
+FETCH_TIMEOUT = 20
+FETCH_MAX_BYTES = 15 * 1024 * 1024
+FETCH_MAX_REDIRECTS = 5
+
+
+class FetchRefused(Exception):
+    """The URL was rejected or produced nothing readable."""
+
+
+def _public_address(host):
+    """True only if every address the host resolves to is on the public internet.
+
+    The server does the fetching, so without this a URL could point it at
+    Railway's private network, the cloud metadata endpoint, or localhost.
+    """
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split('%')[0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+                or ip.is_reserved or ip.is_unspecified):
+            return False
+    return bool(infos)
+
+
+def _fetch_url(url):
+    """(bytes, content_type, final_url) for a public http(s) URL.
+
+    Redirects are followed by hand so each hop is checked — letting requests
+    follow them would let a public URL bounce the fetch somewhere internal.
+    """
+    from urllib.parse import urljoin, urlparse
+
+    headers = {
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                       '(KHTML, like Gecko) Chrome/126.0 Safari/537.36'),
+        'Accept': 'text/html,application/pdf,application/xhtml+xml;q=0.9,*/*;q=0.8',
+    }
+    current = url
+    for _ in range(FETCH_MAX_REDIRECTS + 1):
+        parts = urlparse(current)
+        if parts.scheme not in ('http', 'https') or not parts.hostname:
+            raise FetchRefused('Only http and https links can be read.')
+        if not _public_address(parts.hostname):
+            raise FetchRefused('That address is not on the public internet, so it was not fetched.')
+
+        try:
+            resp = requests.get(current, headers=headers, timeout=FETCH_TIMEOUT,
+                                allow_redirects=False, stream=True)
+        except requests.RequestException as exc:
+            raise FetchRefused(f'Could not reach that page: {exc}') from exc
+
+        if resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get('Location')
+            resp.close()
+            if not location:
+                raise FetchRefused('The page redirected without saying where to.')
+            current = urljoin(current, location)
+            continue
+
+        if resp.status_code in (401, 402, 403):
+            resp.close()
+            raise FetchRefused(
+                f'The site refused the request ({resp.status_code}) — usually a paywall or a '
+                'login. Download the piece as a PDF and attach the file instead.')
+        if resp.status_code >= 400:
+            resp.close()
+            raise FetchRefused(f'The page returned an error ({resp.status_code}).')
+
+        raw = bytearray()
+        for chunk in resp.iter_content(64 * 1024):
+            raw.extend(chunk)
+            if len(raw) > FETCH_MAX_BYTES:
+                resp.close()
+                raise FetchRefused('That page is too large to read.')
+        ctype = (resp.headers.get('Content-Type') or '').lower()
+        return bytes(raw), ctype, current
+    raise FetchRefused('Too many redirects.')
+
+
+def _text_from_url(url):
+    raw, ctype, final_url = _fetch_url(url)
+    if 'pdf' in ctype or raw[:5] == b'%PDF-':
+        name = final_url.rsplit('/', 1)[-1] or 'document.pdf'
+        return tx.full_text(raw, name if name.lower().endswith('.pdf') else name + '.pdf'), name
+
+    html = raw.decode('utf-8', 'replace')
+    m = re.search(r'(?is)<title[^>]*>(.*?)</title>', html)
+    title = re.sub(r'\s+', ' ', m.group(1)).strip() if m else final_url
+    # Nav, headers and footers are noise that crowds out the article.
+    html = re.sub(r'(?is)<(nav|header|footer|aside|form|noscript|svg)[^>]*>.*?</\1>', ' ', html)
+    return inbox._strip_html(html), title
+
+
+@app.route('/api/ideas/extract', methods=['POST'])
+def extract_idea():
+    """Read a file or a link and propose values for the add-idea form."""
+    if not ai.enabled():
+        return jsonify({'error': 'No Anthropic API key. Add one on the Admin page.'}), 503
+
+    upload = request.files.get('file')
+    url = (request.form.get('url') or (request.get_json(silent=True) or {}).get('url') or '').strip()
+
+    try:
+        if upload and upload.filename:
+            raw = upload.read()
+            if oversize := _check_size(raw, upload.filename):
+                return oversize
+            text, title = tx.full_text(raw, upload.filename), upload.filename
+        elif url:
+            text, title = _text_from_url(url)
+        else:
+            return jsonify({'error': 'Attach a file or enter a link first.'}), 400
+    except FetchRefused as exc:
+        return jsonify({'error': str(exc)}), 422
+
+    # Short of a few hundred characters there is nothing to read — a scanned PDF,
+    # or a page that builds itself with JavaScript and ships an empty shell.
+    if len((text or '').strip()) < 200:
+        return jsonify({'error': (
+            'Could not find readable text in that. A scanned PDF has no text layer, and '
+            'many sites load their articles with JavaScript, which a plain fetch cannot '
+            'see. Saving the page as a PDF and attaching the file usually works.')}), 422
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute('SELECT name FROM idea_types ORDER BY name')
+        types = [r['name'] for r in db.to_dicts(cur.fetchall())]
+        cur.execute('SELECT name FROM sources ORDER BY name')
+        known = [r['name'] for r in db.to_dicts(cur.fetchall())]
+
+    try:
+        result = ai.parse_idea_document(title, text, idea_types=types, sources=known)
+    except Exception as exc:
+        app.logger.exception('Idea extraction failed')
+        return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 502
+
+    result['title'] = title
+    result['chars_read'] = len(text)
+    return jsonify(result)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

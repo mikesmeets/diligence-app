@@ -350,6 +350,14 @@
             class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
           <p class="text-xs text-gray-400 mt-1">Max 20 MB. PDF, Word, Excel, images, etc.</p>
         </div>
+        <div class="flex items-center gap-3 pt-1">
+          <button type="button" id="extract-btn" onclick="fillFromAttachment()"
+            class="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors whitespace-nowrap flex-shrink-0">
+            ✦ Fill in from attachment
+          </button>
+          <span class="text-xs text-gray-400">Reads the file or link and fills the form for you to check.</span>
+        </div>
+        <p id="extract-status" class="hidden text-xs leading-relaxed"></p>
       </div>
 
       <div class="flex gap-3 pt-1">
@@ -1025,6 +1033,105 @@ function fmtAttachment(idea) {
 
 // ── Modal ─────────────────────────────────────────────────────────────────
 
+// ── Fill the form from an attachment ──────────────────────────────────────
+function setExtractStatus(html, tone) {
+  const el = document.getElementById('extract-status');
+  const colour = { ok: 'text-green-700', warn: 'text-amber-700', err: 'text-red-600',
+                   busy: 'text-gray-500' }[tone] || 'text-gray-500';
+  el.className = `text-xs leading-relaxed ${colour}`;
+  el.innerHTML = html;
+}
+
+async function fillFromAttachment() {
+  const isFile = document.querySelector('input[name="attach-type"]:checked').value === 'file';
+  const file   = document.getElementById('f-attachment-file').files[0];
+  const url    = document.getElementById('f-attachment-url').value.trim();
+
+  if (isFile && !file) { setExtractStatus('Choose a file first.', 'warn'); return; }
+  if (!isFile && !url) { setExtractStatus('Paste a link first.', 'warn'); return; }
+
+  // Filling overwrites; ask once rather than silently replacing typed work.
+  const typed = document.getElementById('f-ticker').value.trim()
+             || document.getElementById('f-thesis').value.trim();
+  if (typed && !confirm('Replace what is already in the form with what the attachment says?')) return;
+
+  const btn = document.getElementById('extract-btn');
+  btn.disabled = true;
+  btn.textContent = '✦ Reading…';
+  setExtractStatus('Reading the attachment — this usually takes 10–30 seconds.', 'busy');
+
+  try {
+    const fd = new FormData();
+    if (isFile) fd.append('file', file); else fd.append('url', url);
+    const res  = await fetch('/api/ideas/extract', { method: 'POST', body: fd });
+    const body = await res.text();
+    let data = null;
+    try { data = JSON.parse(body); } catch (e) { /* proxy error page */ }
+    if (!res.ok) {
+      setExtractStatus(escHtml((data && data.error) || `Could not read it (${res.status}).`), 'err');
+      return;
+    }
+
+    if (!data.is_idea) {
+      setExtractStatus('That doesn\'t read as a specific investment idea, so nothing was filled in.'
+        + (data.notes ? ' ' + escHtml(data.notes) : ''), 'warn');
+      return;
+    }
+
+    applyExtracted(data);
+
+    const bits = [`Filled from <b>${escHtml(data.title || 'the attachment')}</b>`];
+    if (data.company) bits.push(escHtml(data.company));
+    bits.push(`confidence ${escHtml(data.confidence)}`);
+    let msg = bits.join(' · ') + '. Check it before saving.';
+    if (data.notes) msg += ` <br>⚠ ${escHtml(data.notes)}`;
+    setExtractStatus(msg, data.confidence === 'high' && !data.notes ? 'ok' : 'warn');
+  } catch (e) {
+    setExtractStatus('Could not reach the server.', 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✦ Fill in from attachment';
+  }
+}
+
+function applyExtracted(d) {
+  document.getElementById('f-asset-class').value = d.asset_class || 'public_equity';
+  onAssetClassChange();
+
+  document.getElementById('f-ticker').value = (d.ticker || d.company || '').toUpperCase();
+  const dir = document.querySelector(`input[name="direction"][value="${d.direction === 'short' ? 'short' : 'long'}"]`);
+  if (dir) dir.checked = true;
+  if (d.thesis) document.getElementById('f-thesis').value = d.thesis;
+
+  // Use the publication date as the idea date, but never a future one.
+  const today = new Date().toISOString().split('T')[0];
+  if (d.document_date && d.document_date <= today) {
+    document.getElementById('f-idea-date').value = d.document_date;
+  }
+
+  if (d.idea_type) {
+    const t = ideaTypes.find(x => x.name.toLowerCase() === d.idea_type.toLowerCase());
+    if (t) populateIdeaTypeDropdown(t.id);
+  }
+
+  // An existing source is selected; a new one is offered but not created, so a
+  // misread publisher name doesn't quietly land in the shared source list.
+  if (d.source_name) {
+    const src = sources.find(x => x.name.toLowerCase() === d.source_name.toLowerCase());
+    if (src) {
+      populateSourceDropdown(src.id);
+      document.getElementById('new-source-row').classList.add('hidden');
+    } else {
+      document.getElementById('f-source').value = '__new__';
+      document.getElementById('new-source-row').classList.remove('hidden');
+      document.getElementById('f-new-source').value = d.source_name;
+    }
+  }
+
+  // Prices depend on ticker and date, both of which may just have changed.
+  if (d.ticker && (d.asset_class || 'public_equity') === 'public_equity') onTickerBlur();
+}
+
 function onAttachTypeChange() {
   const isFile = document.querySelector('input[name="attach-type"]:checked').value === 'file';
   document.getElementById('attach-url-row').classList.toggle('hidden', isFile);
@@ -1058,6 +1165,7 @@ function _resetModal() {
   document.getElementById('attach-url-row').classList.remove('hidden');
   document.getElementById('attach-file-row').classList.add('hidden');
   document.getElementById('existing-attachment-strip').classList.add('hidden');
+  document.getElementById('extract-status').classList.add('hidden');
   clearErrors();
 }
 
