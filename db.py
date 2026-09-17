@@ -491,6 +491,9 @@ _MIGRATIONS = [
     ('attachment_data', 'BYTEA' if IS_PG else 'BLOB'),
     ('source_id',       'INTEGER'),
     ('attachment_key',  'TEXT'),   # bucket object key (replaces attachment_data for new uploads)
+    # Why the PDF copy of a linked page couldn't be made (paywall, dead link...).
+    # Null once a copy exists, so the idea page can offer a retry only when needed.
+    ('attachment_archive_note', 'TEXT'),
     ('hat_tip_id',      'INTEGER'),
     ('rating',          'REAL'),
     ('idea_type',       'TEXT'),

@@ -296,7 +296,7 @@ def get_ideas():
         cur.execute(
             'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
-            'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
+            'i.attachment_url, i.attachment_name, i.attachment_archive_note, i.source_id, s.name AS source_name, '
             'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
             'i.idea_type_id, it.name AS idea_type_name, '
             'i.subtype_id, st.name AS subtype_name '
@@ -372,6 +372,9 @@ def create_idea():
     )
     with db.get_conn() as conn:
         row = db.insert_idea(conn, values)
+    # A link with no uploaded file: keep the link and capture a copy of the page.
+    if attachment_url and not attachment_key and not attachment_data and storage.ENABLED:
+        _archive_in_background(row['id'])
     return jsonify(row), 201
 
 
@@ -470,9 +473,11 @@ def update_idea(idea_id):
         )
 
         # Fetch existing attachment_key so we can delete the old bucket object if replaced
-        cur.execute(f'SELECT attachment_key FROM ideas WHERE id = {db.PH}', (idea_id,))
+        cur.execute(f'SELECT attachment_key, attachment_url FROM ideas WHERE id = {db.PH}',
+                    (idea_id,))
         existing = db.to_dict(cur.fetchone()) or {}
         old_key = existing.get('attachment_key')
+        recapture = False
 
         # Update attachment only when the client explicitly changed it
         clear = data.get('clear_attachment') == 'true'
@@ -509,19 +514,26 @@ def update_idea(idea_id):
                     (None, file_obj.filename, blob, None, idea_id),
                 )
         elif 'attachment_url' in data:
-            if old_key:
-                storage.delete(old_key)
-            cur.execute(
-                f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
-                f'attachment_data={db.PH}, attachment_key={db.PH} WHERE id={db.PH}',
-                (data.get('attachment_url') or None, None, None, None, idea_id),
-            )
+            new_url = (data.get('attachment_url') or '').strip() or None
+            # The form resends the link on every edit. Only an actual change may
+            # discard the stored copy — otherwise fixing a typo in the thesis
+            # would throw away the saved page.
+            if new_url != existing.get('attachment_url'):
+                if old_key:
+                    storage.delete(old_key)
+                cur.execute(
+                    f'UPDATE ideas SET attachment_url={db.PH}, attachment_name={db.PH}, '
+                    f'attachment_data={db.PH}, attachment_key={db.PH}, '
+                    f'attachment_archive_note={db.PH} WHERE id={db.PH}',
+                    (new_url, None, None, None, None, idea_id),
+                )
+                recapture = bool(new_url) and storage.ENABLED
         # else: attachment untouched
 
         cur.execute(
             f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
-            f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
+            f'i.attachment_url, i.attachment_name, i.attachment_archive_note, i.source_id, s.name AS source_name, '
             f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
             f'i.idea_type_id, it.name AS idea_type_name, '
             f'i.subtype_id, st.name AS subtype_name '
@@ -535,6 +547,10 @@ def update_idea(idea_id):
         )
         row = db.to_dict(cur.fetchone())
 
+    # Started only once the transaction above has committed, so the capture
+    # reads the new link rather than the one being replaced.
+    if recapture:
+        _archive_in_background(idea_id)
     return jsonify(row)
 
 
@@ -557,7 +573,7 @@ def idea_detail(idea_id):
         cur.execute(
             f'SELECT i.id, i.ticker, i.idea_date, i.idea_price, i.initial_date, i.initial_price, '
             f'i.current_price, i.thesis, i.direction, i.asset_class, i.created_at, '
-            f'i.attachment_url, i.attachment_name, i.source_id, s.name AS source_name, '
+            f'i.attachment_url, i.attachment_name, i.attachment_archive_note, i.source_id, s.name AS source_name, '
             f'i.hat_tip_id, ht.name AS hat_tip_name, i.rating, i.idea_type, '
             f'i.idea_type_id, it.name AS idea_type_name, '
             f'i.subtype_id, st.name AS subtype_name '
@@ -3835,6 +3851,121 @@ def extract_idea():
     result['title'] = title
     result['chars_read'] = len(text)
     return jsonify(result)
+
+
+# ── Keeping a copy of linked pages ───────────────────────────────────────────
+#
+# An idea whose attachment is a link keeps the link, and also gets a PDF of the
+# page stored in its folder — so the substance survives the page moving,
+# going behind a paywall, or vanishing. Capture runs after the save returns,
+# because a slow site shouldn't hold up adding an idea.
+
+# Below this the fetch almost certainly got a paywall or an empty JavaScript
+# shell, and a PDF of that would look like a copy while holding nothing.
+MIN_ARCHIVE_CHARS = 200
+
+
+def _snapshot_url(url, ticker=None, day=None):
+    """(pdf_bytes, filename) for a public URL. Raises FetchRefused on failure."""
+    raw, ctype, final_url = _fetch_url(url)
+    title = None
+
+    if 'pdf' in ctype or raw[:5] == b'%PDF-':
+        # Already a PDF: keep the original file rather than re-rendering its text.
+        tail = final_url.rstrip('/').rsplit('/', 1)[-1].split('?')[0]
+        title = re.sub(r'\.pdf$', '', tail, flags=re.I) or 'document'
+        return raw, mailpdf.page_filename(title, ticker, day)
+
+    html = raw.decode('utf-8', 'replace')
+    m = re.search(r'(?is)<title[^>]*>(.*?)</title>', html)
+    title = re.sub(r'\s+', ' ', m.group(1)).strip() if m else final_url
+    body = re.sub(r'(?is)<(nav|header|footer|aside|form|noscript|svg)[^>]*>.*?</\1>', ' ', html)
+    text = inbox._strip_html(body)
+    if len(text.strip()) < MIN_ARCHIVE_CHARS:
+        raise FetchRefused(
+            'The page had almost no readable text — usually a paywall, a login, or a site '
+            'that builds itself with JavaScript. Save it as a PDF yourself and attach the file.')
+
+    captured = datetime.now().strftime('%Y-%m-%d %H:%M')
+    pdf = mailpdf.render_page(title, final_url, captured, text)
+    return pdf, mailpdf.page_filename(title, ticker, day)
+
+
+def _archive_idea_url(idea_id):
+    """Capture the idea's linked page as a PDF. Returns the error text, or None."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT ticker, idea_date, attachment_url, attachment_key FROM ideas '
+            f'WHERE id = {db.PH}', (idea_id,))
+        idea = db.to_dict(cur.fetchone())
+    if not idea or not idea.get('attachment_url'):
+        return 'This idea has no link to capture.'
+    if not storage.ENABLED:
+        return 'File storage is not configured, so there is nowhere to keep the copy.'
+
+    url = idea['attachment_url']
+    try:
+        pdf, name = _snapshot_url(url, idea.get('ticker'), idea.get('idea_date'))
+        info, err = _store_bytes(pdf, name, parts=_idea_folder(idea['idea_date'], idea['ticker']))
+        if err:
+            raise FetchRefused('Could not store the copy in the bucket.')
+    except FetchRefused as exc:
+        note = str(exc)
+    except Exception as exc:
+        app.logger.exception('Capturing %s failed', url)
+        note = f'{type(exc).__name__}: {exc}'
+    else:
+        note = None
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        # The link may have been edited while the page was being fetched. If so,
+        # this copy belongs to the old link — discard it rather than mislabel it.
+        cur.execute(f'SELECT attachment_url, attachment_key FROM ideas WHERE id = {db.PH}',
+                    (idea_id,))
+        now = db.to_dict(cur.fetchone())
+        if not now or now.get('attachment_url') != url:
+            if note is None:
+                _delete_keys([info['object_key']])
+            return 'The link changed while it was being captured.'
+
+        if note is None:
+            old_key = now.get('attachment_key')
+            cur.execute(
+                f'UPDATE ideas SET attachment_name = {db.PH}, attachment_key = {db.PH}, '
+                f'attachment_archive_note = NULL WHERE id = {db.PH}',
+                (info['filename'], info['object_key'], idea_id))
+        else:
+            old_key = None
+            cur.execute(
+                f'UPDATE ideas SET attachment_archive_note = {db.PH} WHERE id = {db.PH}',
+                (note, idea_id))
+    # A re-capture replaces the earlier copy rather than piling up duplicates.
+    if note is None and old_key and old_key != info['object_key']:
+        _delete_keys([old_key])
+    return note
+
+
+def _archive_in_background(idea_id):
+    threading.Thread(target=_archive_idea_url, args=(idea_id,), daemon=True).start()
+
+
+@app.route('/api/ideas/<int:idea_id>/archive', methods=['POST'])
+def archive_idea_url(idea_id):
+    """Capture (or re-capture) the linked page now, and wait for the result."""
+    note = _archive_idea_url(idea_id)
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(
+            f'SELECT attachment_url, attachment_name, attachment_archive_note FROM ideas '
+            f'WHERE id = {db.PH}', (idea_id,))
+        row = db.to_dict(cur.fetchone())
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    if note:
+        return jsonify({'error': note, **row}), 422
+    return jsonify(row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

@@ -355,7 +355,7 @@
             class="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors whitespace-nowrap flex-shrink-0">
             ✦ Fill in from attachment
           </button>
-          <span class="text-xs text-gray-400">Reads the file or link and fills the form for you to check.</span>
+          <span class="text-xs text-gray-400">Reads the file or link and fills the form for you to check. Links also get a PDF copy saved with the idea.</span>
         </div>
         <p id="extract-status" class="hidden text-xs leading-relaxed"></p>
       </div>
@@ -1006,29 +1006,37 @@ function escHtml(str) {
 }
 
 function fmtAttachment(idea) {
-  if (idea.attachment_name) {
-    return `<a href="/api/ideas/${idea.id}/attachment" target="_blank"
-      class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap">
-      <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
-      </svg>
-      <span class="truncate max-w-[120px]" title="${escHtml(idea.attachment_name)}">${escHtml(idea.attachment_name)}</span>
-    </a>`;
-  }
+  const clip = `<svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>`;
+  const ext = `<svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>`;
+  const cls = 'inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap';
+  const parts = [];
+
   if (idea.attachment_url) {
     let label;
-    try { label = new URL(idea.attachment_url).hostname; } catch { label = idea.attachment_url; }
-    return `<a href="${escHtml(idea.attachment_url)}" target="_blank" rel="noopener noreferrer"
-      class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap">
-      <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
-      </svg>
-      <span class="truncate max-w-[120px]" title="${escHtml(idea.attachment_url)}">${escHtml(label)}</span>
-    </a>`;
+    try { label = new URL(idea.attachment_url).hostname.replace(/^www\./, ''); }
+    catch { label = idea.attachment_url; }
+    parts.push(`<a href="${escHtml(idea.attachment_url)}" target="_blank" rel="noopener noreferrer"
+      class="${cls}" title="${escHtml(idea.attachment_url)}">${ext}
+      <span class="truncate max-w-[110px]">${escHtml(label)}</span></a>`);
   }
-  return '<span class="text-gray-400">—</span>';
+  if (idea.attachment_name) {
+    // With a link present, the file is the saved copy of that page — say so
+    // briefly rather than repeating a long generated filename.
+    const label = idea.attachment_url ? 'PDF copy' : idea.attachment_name;
+    parts.push(`<a href="/api/ideas/${idea.id}/attachment" target="_blank"
+      class="${cls}" title="${escHtml(idea.attachment_name)}">${clip}
+      <span class="truncate max-w-[110px]">${escHtml(label)}</span></a>`);
+  } else if (idea.attachment_url && idea.attachment_archive_note) {
+    parts.push(`<span class="text-amber-600 text-xs" title="${escHtml(idea.attachment_archive_note)}">no copy</span>`);
+  }
+
+  return parts.length
+    ? `<div class="flex flex-col gap-0.5">${parts.join('')}</div>`
+    : '<span class="text-gray-400">—</span>';
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────
@@ -1214,9 +1222,11 @@ function openEditModal(id) {
 
   // Show the existing-attachment strip so the user can see / remove it
   if (idea.attachment_name || idea.attachment_url) {
-    const label = idea.attachment_name
-      ? `📎 ${idea.attachment_name}`
-      : `🔗 ${idea.attachment_url}`;
+    const label = idea.attachment_url && idea.attachment_name
+      ? `🔗 ${idea.attachment_url} · 📎 PDF copy`
+      : idea.attachment_name
+        ? `📎 ${idea.attachment_name}`
+        : `🔗 ${idea.attachment_url}`;
     document.getElementById('existing-attachment-label').textContent = label;
     document.getElementById('existing-attachment-strip').classList.remove('hidden');
   }

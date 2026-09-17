@@ -64,8 +64,8 @@ def _body_flowables(body, styles):
     return out
 
 
-def render(mail, attachments=()):
-    """PDF bytes for one email. `attachments` is a list of (filename, raw)."""
+def _build(title, meta, body, footer=None, author=''):
+    """Cover document: a title, a label/value block, then the body text."""
     from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -79,8 +79,6 @@ def render(mail, attachments=()):
         'Meta':  ParagraphStyle('M', parent=base['Normal'], fontSize=8.5, leading=12,
                                 textColor='#666666'),
         'Body':  ParagraphStyle('B', parent=base['Normal'], fontSize=10, leading=14.5),
-        'Note':  ParagraphStyle('N', parent=base['Normal'], fontSize=8.5, leading=12,
-                                textColor='#8a6d3b'),
     }
 
     buf = io.BytesIO()
@@ -88,36 +86,51 @@ def render(mail, attachments=()):
         buf, pagesize=LETTER,
         leftMargin=0.9 * inch, rightMargin=0.9 * inch,
         topMargin=0.8 * inch, bottomMargin=0.8 * inch,
-        title=_safe(mail.get('subject') or 'Email'),
-        author=_safe(mail.get('from_addr') or ''),
+        title=_safe(title or 'Document'), author=_safe(author),
     )
 
-    story = [Paragraph(_escape(mail.get('subject') or '(no subject)'), styles['Title'])]
-
-    meta = []
-    for label, key in (('From', 'from_addr'), ('To', 'to_addr'),
-                       ('Received', 'received_at'), ('Message-ID', 'message_id')):
-        value = mail.get(key)
-        if value:
-            meta.append(f'<b>{label}:</b> {_escape(value)}')
-    if meta:
-        story.append(Paragraph('<br/>'.join(meta), styles['Meta']))
+    story = [Paragraph(_escape(title or '(untitled)'), styles['Title'])]
+    lines = [f'<b>{label}:</b> {_escape(value)}' for label, value in meta if value]
+    if lines:
+        story.append(Paragraph('<br/>'.join(lines), styles['Meta']))
     story.append(Spacer(1, 14))
-
-    story += _body_flowables(mail.get('body'), styles)
-
-    names = [n for n, _ in attachments]
-    if names:
+    story += _body_flowables(body, styles)
+    if footer:
         story.append(Spacer(1, 10))
-        story.append(Paragraph(
-            '<b>Attachments on the original email:</b> ' + _escape(', '.join(names)),
-            styles['Meta']))
+        story.append(Paragraph(footer, styles['Meta']))
 
     doc.build(story)
-    pdf = buf.getvalue()
+    return buf.getvalue()
 
-    merged = _append_pdfs(pdf, attachments)
-    return merged or pdf
+
+def render(mail, attachments=()):
+    """PDF bytes for one email. `attachments` is a list of (filename, raw)."""
+    names = [n for n, _ in attachments]
+    footer = ('<b>Attachments on the original email:</b> ' + _escape(', '.join(names))
+              if names else None)
+    pdf = _build(
+        mail.get('subject') or '(no subject)',
+        (('From', mail.get('from_addr')), ('To', mail.get('to_addr')),
+         ('Received', mail.get('received_at')), ('Message-ID', mail.get('message_id'))),
+        mail.get('body'), footer=footer, author=mail.get('from_addr') or '',
+    )
+    return _append_pdfs(pdf, attachments) or pdf
+
+
+def render_page(title, url, captured_at, text):
+    """A text snapshot of a web page, with the address and capture time on top.
+
+    This keeps the words, not the look: no images, styling or layout. That is
+    the part worth having if the page later disappears, and it avoids running a
+    headless browser on the server.
+    """
+    return _build(
+        title or url,
+        (('URL', url), ('Captured', captured_at)),
+        text,
+        footer=('Text captured from the page at the time the idea was saved. Images, '
+                'charts and layout are not included; the link above is the original.'),
+    )
 
 
 def _append_pdfs(cover, attachments):
@@ -154,6 +167,15 @@ def _append_pdfs(cover, attachments):
     except Exception:
         log.exception('Merging attachments failed; filing the cover page alone')
         return None
+
+
+def page_filename(title, ticker=None, day=None):
+    """Snapshot name in the same shape as the email PDFs."""
+    day = (day or datetime.now().isoformat())[:10]
+    name = re.sub(r'[^\w\s-]', '', _safe(title or 'web page')).strip()
+    name = re.sub(r'\s+', ' ', name)[:60] or 'web page'
+    label = ' '.join(p for p in ((ticker or '').upper(), day) if p)
+    return f'{label} {name}.pdf'.strip()
 
 
 def filename_for(mail, ticker=None):
