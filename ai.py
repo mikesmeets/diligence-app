@@ -353,6 +353,26 @@ Report only what the sources say. If the search turns up nothing useful for this
 specific quarter, say so plainly - do not reason from the price move alone, and do \
 not fill the gap from memory."""
 
+TRENDS_PROMPT = """Below are summaries of {count} consecutive earnings calls for \
+{name} ({ticker}), oldest first, each with the share price reaction to that call.
+
+Identify what the business looks like across the whole span - the arcs that only show \
+up when the quarters are read together. Judge trends by what management said and how \
+the numbers moved, and note where the two diverged.
+
+Write:
+- trends: 4-7 cards. Each has a title that makes a claim rather than naming a topic
+  ("Marketplace Pivot Traded Growth For Creator Attrition", not "Marketplace"), a
+  tone of good, warn or bad from the shareholder's point of view, and a body of
+  70-130 words citing the specific quarters that show it.
+- milestones: 6-12 entries in chronological order, each with a period (e.g.
+  "Q4 2023 - February 2024"), a title, and a 40-90 word description. Cover the
+  turning points: strategy changes, management changes, the largest price reactions,
+  and the quarters where the trajectory visibly shifted.
+
+CALL SUMMARIES
+{summaries}"""
+
 _CALL_SCHEMA = {
     'type': 'object',
     'properties': {
