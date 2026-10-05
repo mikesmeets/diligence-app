@@ -2,82 +2,150 @@
 {% block title %}Transcripts — {{ project.name }}{% endblock %}
 
 {% block content %}
+<style>
+  /* The summary reads as a document rather than a form, so it gets a quieter
+     palette than the rest of the app: slate chrome, one accent, and colour
+     reserved for the numbers that carry meaning. */
+  .tsum-head { background: linear-gradient(135deg, #2d3748 0%, #3d4f63 100%); }
+  .tsum-nav button { border-bottom: 2px solid transparent; }
+  .tsum-nav button.on { color: #8db4d0; border-bottom-color: #8db4d0; }
+  .tcard { border-top: 4px solid #5b7a94; }
+  .tcard.good { border-top-color: #3a8a5c; }
+  .tcard.warn { border-top-color: #b8860b; }
+  .tcard.bad  { border-top-color: #c0392b; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .ttable th { position: sticky; top: 0; background: #f8fafc; }
+</style>
 
-<!-- Upload -->
-<div class="bg-white rounded-xl border border-gray-200 p-5">
-  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Add transcripts</p>
-  <div class="flex items-center gap-3 flex-wrap">
-    <input id="files" type="file" multiple {{ '' if storage_enabled else 'disabled' }}
-      class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
-    <button id="upload-btn" onclick="upload()" {{ '' if storage_enabled else 'disabled' }}
-      class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
-      Upload
-    </button>
-    <button id="redetect-btn" onclick="redetect()" {{ '' if storage_enabled else 'disabled' }}
-      title="Re-read the stored files for anything still missing"
-      class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60 transition-colors">
-      Re-detect
-    </button>
-    <button id="summarize-btn" onclick="summarize()"
-      title="Summarise each call that doesn't have one yet"
-      class="px-3 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors">
-      ✦ Summarise calls
-    </button>
-    <span id="upload-status" class="text-xs text-gray-400"></span>
-  </div>
-  <p class="text-xs text-gray-400 mt-3 leading-relaxed">
-    Pick as many as you like. Each is renamed
-    <code class="font-mono text-gray-500">{{ '{Ticker} - {Q}{YY} - {YYYY-MM-DD}' }}</code>,
-    read from the filename where possible. Anything it can't work out shows as
-    <span class="font-mono">—</span> and can be corrected below.
-  </p>
+<!-- Masthead -->
+<div class="tsum-head rounded-t-xl px-6 py-5 text-white">
+  <h2 class="text-xl font-bold tracking-tight">
+    {{ project.name }} <span class="text-[#8db4d0]">({{ project.ticker or '—' }})</span>
+    <span class="font-normal text-[#a0b3c6]">— Earnings Call Summary</span>
+  </h2>
+  <p id="tsum-sub" class="text-sm text-[#a0b3c6] mt-1">No transcripts yet.</p>
 </div>
 
-<!-- Long-term trends across every call -->
-<div class="bg-white rounded-xl border border-gray-200 p-5 mt-5">
-  <div class="flex items-baseline justify-between gap-3 flex-wrap">
+<!-- Section nav -->
+<div class="tsum-nav bg-[#2d3748] rounded-b-xl px-6 flex gap-1 overflow-x-auto">
+  <button onclick="showSection('trends')" id="tab-trends"
+    class="on whitespace-nowrap px-4 py-3 text-sm font-medium text-[#a0b3c6] hover:text-white transition-colors">Trends</button>
+  <button onclick="showSection('prices')" id="tab-prices"
+    class="whitespace-nowrap px-4 py-3 text-sm font-medium text-[#a0b3c6] hover:text-white transition-colors">Price Table</button>
+  <button onclick="showSection('calls')" id="tab-calls"
+    class="whitespace-nowrap px-4 py-3 text-sm font-medium text-[#a0b3c6] hover:text-white transition-colors">Call Details</button>
+  <button onclick="showSection('add')" id="tab-add"
+    class="whitespace-nowrap px-4 py-3 text-sm font-medium text-[#a0b3c6] hover:text-white transition-colors ml-auto">Add &amp; Manage</button>
+</div>
+
+<!-- ── Trends ─────────────────────────────────────────────────────────── -->
+<section id="sec-trends" class="mt-5">
+  <div class="flex items-baseline justify-between gap-3 flex-wrap mb-3">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
-      Long-term trends <span id="trends-when" class="normal-case font-normal text-gray-300 ml-1"></span>
+      What the calls say together <span id="trends-when" class="normal-case font-normal text-gray-300 ml-1"></span>
     </p>
     <button id="trends-btn" onclick="buildTrends()"
       class="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors">
       ✦ Build
     </button>
   </div>
-  <div id="trends-body" class="mt-4"></div>
-</div>
+  <div id="trends-body"></div>
+</section>
 
-<!-- Price chart with the calls marked -->
-<div id="chart-card" class="bg-white rounded-xl border border-gray-200 p-5 mt-5 hidden">
-  <div class="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
-    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
-      Price <span id="chart-legend" class="normal-case font-normal text-gray-500 ml-1"></span>
-    </p>
-    <div id="period-picker" class="inline-flex rounded-lg border border-gray-300 overflow-hidden text-xs"></div>
+<!-- ── Price table ────────────────────────────────────────────────────── -->
+<section id="sec-prices" class="mt-5 hidden">
+  <div id="chart-card" class="bg-white rounded-xl border border-gray-200 p-5 mb-5 hidden">
+    <div class="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+        Price <span id="chart-legend" class="normal-case font-normal text-gray-500 ml-1"></span>
+      </p>
+      <div id="period-picker" class="inline-flex rounded-lg border border-gray-300 overflow-hidden text-xs"></div>
+    </div>
+    <div id="chart-wrap" class="relative">
+      <p id="chart-status" class="text-sm text-gray-400 py-12 text-center">Loading price history…</p>
+    </div>
   </div>
-  <div id="chart-wrap" class="relative">
-    <p id="chart-status" class="text-sm text-gray-400 py-12 text-center">Loading price history…</p>
-  </div>
-</div>
 
-<!-- Sort -->
-<div class="flex items-center justify-between gap-3 mt-6 mb-3 flex-wrap">
-  <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
-    Transcripts <span id="count" class="text-gray-300"></span>
+  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+    <div class="overflow-x-auto max-h-[70vh]">
+      <table class="ttable w-full text-sm">
+        <thead class="text-xs text-gray-500">
+          <tr class="border-b border-gray-200">
+            <th class="text-left font-semibold px-4 py-2.5">Quarter</th>
+            <th class="text-left font-semibold px-4 py-2.5">Call Date</th>
+            <th class="text-left font-semibold px-4 py-2.5">Executives</th>
+            <th class="text-right font-semibold px-4 py-2.5">2 Days Before</th>
+            <th class="text-right font-semibold px-4 py-2.5">2 Days After</th>
+            <th class="text-right font-semibold px-4 py-2.5">Earnings Impact</th>
+            <th class="text-right font-semibold px-4 py-2.5">Since Prior Call</th>
+            <th class="text-left font-semibold px-4 py-2.5">Sentiment</th>
+          </tr>
+        </thead>
+        <tbody id="price-rows"></tbody>
+      </table>
+    </div>
+  </div>
+  <p class="text-xs text-gray-400 mt-3 leading-relaxed px-1">
+    <b>Earnings Impact</b> = close two trading days after the call ÷ close two trading days
+    before. <b>Since Prior Call</b> = this call's two-days-before close ÷ the previous call's
+    two-days-after close, so consecutive quarters leave no gap and no overlap. Trading days,
+    not calendar days, so a Friday call isn't measured across a weekend. Prices from Yahoo
+    Finance, adjusted for splits and dividends.
   </p>
-  <div class="flex items-center gap-2">
-    <label for="sort" class="text-xs text-gray-400">Sort</label>
-    <select id="sort" onchange="setSort(this.value)"
-      class="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500">
-      <option value="date-desc">Newest first</option>
-      <option value="date-asc">Oldest first</option>
-      <option value="reaction-desc">Best reaction</option>
-      <option value="reaction-asc">Worst reaction</option>
-    </select>
-  </div>
-</div>
+</section>
 
-<div id="list"></div>
+<!-- ── Call details ───────────────────────────────────────────────────── -->
+<section id="sec-calls" class="mt-5 hidden">
+  <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+      Calls <span id="count" class="text-gray-300"></span>
+    </p>
+    <div class="flex items-center gap-2">
+      <button id="summarize-btn" onclick="summarize()"
+        title="Summarise each call that doesn't have one yet"
+        class="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors">
+        ✦ Summarise calls
+      </button>
+      <label for="sort" class="text-xs text-gray-400 ml-1">Sort</label>
+      <select id="sort" onchange="setSort(this.value)"
+        class="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="date-desc">Newest first</option>
+        <option value="date-asc">Oldest first</option>
+        <option value="reaction-desc">Best reaction</option>
+        <option value="reaction-asc">Worst reaction</option>
+      </select>
+    </div>
+  </div>
+  <div id="list"></div>
+</section>
+
+<!-- ── Add & manage ───────────────────────────────────────────────────── -->
+<section id="sec-add" class="mt-5 hidden">
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Add transcripts</p>
+    <div class="flex items-center gap-3 flex-wrap">
+      <input id="files" type="file" multiple {{ '' if storage_enabled else 'disabled' }}
+        class="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-50" />
+      <button id="upload-btn" onclick="upload()" {{ '' if storage_enabled else 'disabled' }}
+        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
+        Upload
+      </button>
+      <button id="redetect-btn" onclick="redetect()" {{ '' if storage_enabled else 'disabled' }}
+        title="Re-read the stored files for anything still missing"
+        class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60 transition-colors">
+        Re-detect
+      </button>
+      <span id="upload-status" class="text-xs text-gray-400"></span>
+    </div>
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      Pick as many as you like. Each is renamed
+      <code class="font-mono text-gray-500">{{ '{Ticker} - {Q}{YY} - {YYYY-MM-DD}' }}</code>,
+      read from the document itself where the filename doesn't say. Anything it can't work
+      out shows as <span class="font-mono">—</span> and can be corrected below.
+    </p>
+  </div>
+  <div id="manage-list" class="mt-4"></div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -87,29 +155,43 @@
 // tags, so redeclaring any of them throws before this file runs.
 const TICKER = {{ (project.ticker or '') | tojson }};
 
-let items = [], sort = 'date-desc', editing = new Set(), trends = null;
+let items = [], sort = 'date-desc', editing = new Set(), trends = null, section = 'trends';
 
 const SENT_CLASS = {
-  Bullish: 'bg-green-50 text-green-700',
-  Bearish: 'bg-red-50 text-red-600',
-  Mixed:   'bg-amber-50 text-amber-700',
-  Neutral: 'bg-gray-100 text-gray-500',
+  Bullish:  'bg-[#e6f4ec] text-[#276749]',
+  Cautious: 'bg-[#fff6e0] text-[#8a6d1b]',
+  Mixed:    'bg-[#eef1f5] text-[#4a5568]',
+  Bearish:  'bg-[#fbe9e7] text-[#9b2c2c]',
+  Neutral:  'bg-gray-100 text-gray-500',
 };
-const TONE_CLASS = {
-  good: 'border-t-green-500', warn: 'border-t-amber-500', bad: 'border-t-red-500',
-};
+const TONE_CLASS = { good: 'good', warn: 'warn', bad: 'bad' };
 
-// CEO / CFO / IR, appended to the filename line when the summary found them.
+const signed = v => v == null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+const money  = v => v == null ? null : `$${v.toFixed(2)}`;
+const tone   = v => v == null ? 'text-gray-300'
+                  : v > 0.05 ? 'text-[#3a8a5c]' : v < -0.05 ? 'text-[#c0392b]' : 'text-gray-600';
+
+function period(t) {
+  // "AAPL - Q126 - 2026-01-29" → "Q126"; the middle segment is the fiscal period.
+  const parts = (t.title || '').split(' - ');
+  return parts.length > 1 ? parts[1] : '—';
+}
+
 function people(t) {
   const bits = [['CEO', t.ceo], ['CFO', t.cfo], ['IR', t.ir]]
     .filter(([, v]) => (v || '').trim())
     .map(([k, v]) => `${k}: ${escHtml(v)}`);
-  return bits.length ? ` <span class="text-gray-300">·</span> ${bits.join(' | ')}` : '';
+  return bits.join(' | ');
 }
 
-const signed = v => v == null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
-const tone   = v => v == null ? 'text-gray-300'
-                  : v >= 0 ? 'text-green-600' : 'text-red-500';
+function showSection(name) {
+  section = name;
+  for (const s of ['trends', 'prices', 'calls', 'add']) {
+    document.getElementById(`sec-${s}`).classList.toggle('hidden', s !== name);
+    document.getElementById(`tab-${s}`).classList.toggle('on', s === name);
+  }
+  if (name === 'prices' && TICKER) loadChart();
+}
 
 // ── Data ──────────────────────────────────────────────────────────────────
 async function load() {
@@ -118,9 +200,7 @@ async function load() {
     const s = await res.json();
     items  = s.transcripts || [];
     trends = s.trend_data || null;
-    render();
-    renderTrends();
-    // A job may still be running from a previous visit — pick it back up.
+    renderAll();
     if ((s.calls && s.calls.status === 'running') ||
         (s.trends && s.trends.status === 'running')) {
       setBusy('summarize-btn', s.calls && s.calls.status === 'running',
@@ -130,14 +210,36 @@ async function load() {
       poll();
     }
   }
-  if (TICKER) loadChart();
+  if (TICKER && section === 'prices') loadChart();
+}
+
+function renderAll() {
+  renderMasthead();
+  render();
+  renderPriceTable();
+  renderTrends();
+  renderManage();
+}
+
+function renderMasthead() {
+  const dated = items.filter(t => t.call_date).sort((a, b) => a.call_date.localeCompare(b.call_date));
+  const summarised = items.filter(t => (t.summary || '').trim()).length;
+  if (!items.length) {
+    document.getElementById('tsum-sub').textContent =
+      'No transcripts yet — add some under “Add & Manage”.';
+    return;
+  }
+  const span = dated.length
+    ? `${period(dated[0])} through ${period(dated[dated.length - 1])} · ` : '';
+  document.getElementById('tsum-sub').textContent =
+    `${span}${items.length} call${items.length === 1 ? '' : 's'} · `
+    + `${summarised} summarised · prices from Yahoo Finance`;
 }
 
 async function upload() {
   const input = document.getElementById('files');
   const files = Array.from(input.files || []);
   if (!files.length) { alert('Choose one or more files first.'); return; }
-
   if (files.some(tooBig)) return;
 
   const btn    = document.getElementById('upload-btn');
@@ -153,15 +255,13 @@ async function upload() {
     const out = await res.json();
     items = out.transcripts;
     input.value = '';
-    // Report partial failures rather than a bare success — with ten files it
-    // is not obvious that one is missing.
     status.textContent = `Added ${out.added}.`;
     if ((out.failed || []).length) {
       alert('Some files were not added:\n'
             + out.failed.map(f => `• ${f.filename}: ${f.error}`).join('\n'));
     }
-    render();
-    if (TICKER) loadChart();
+    renderAll();
+    if (TICKER && section === 'prices') loadChart();
   } finally {
     btn.disabled = false;
     setTimeout(() => { status.textContent = ''; }, 4000);
@@ -179,22 +279,60 @@ async function redetect() {
     if (!res.ok) { status.textContent = ''; alert(await apiError(res)); return; }
     const out = await res.json();
     items = out.transcripts;
-    status.textContent = out.updated
-      ? `Filled in ${out.updated}.`
-      : 'Nothing left to fill in.';
+    status.textContent = out.updated ? `Filled in ${out.updated}.` : 'Nothing left to fill in.';
     if ((out.unreadable || []).length) {
       alert('Could not read these — set their quarter and date by hand:\n'
             + out.unreadable.map(f => `• ${f.filename}: ${f.error}`).join('\n'));
     }
-    render();
-    if (TICKER) loadChart();
+    renderAll();
   } finally {
     btn.disabled = false;
     setTimeout(() => { status.textContent = ''; }, 5000);
   }
 }
 
-// ── AI summaries ──────────────────────────────────────────────────────────
+async function saveMeta(id) {
+  const q  = document.getElementById(`q-${id}`).value;
+  const fy = document.getElementById(`fy-${id}`).value;
+  const cd = document.getElementById(`cd-${id}`).value;
+  const res = await fetch(`/api/transcripts/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fiscal_quarter: q, fiscal_year: fy, call_date: cd }),
+  });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  items = await res.json();
+  editing.delete(id);
+  renderAll();
+  if (TICKER && section === 'prices') loadChart();
+}
+
+async function remove(id) {
+  if (!confirm('Delete this transcript?')) return;
+  await fetch(`/api/transcripts/${id}`, { method: 'DELETE' });
+  await load();
+}
+
+function toggleEdit(id) {
+  editing.has(id) ? editing.delete(id) : editing.add(id);
+  renderManage();
+}
+
+function setSort(v) { sort = v; render(); }
+
+function sorted() {
+  const copy = items.slice();
+  const rx = x => (x.prices || {}).reaction;
+  const by = {
+    'date-desc':     (a, b) => (b.call_date || '').localeCompare(a.call_date || ''),
+    'date-asc':      (a, b) => (a.call_date || '').localeCompare(b.call_date || ''),
+    // Missing figures sort last either way rather than pretending to be zero.
+    'reaction-desc': (a, b) => (rx(b) ?? -Infinity) - (rx(a) ?? -Infinity),
+    'reaction-asc':  (a, b) => (rx(a) ??  Infinity) - (rx(b) ??  Infinity),
+  }[sort];
+  return copy.sort(by);
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────
 let polling = false;
 
 function setBusy(id, on, busyText, idleText) {
@@ -206,16 +344,14 @@ function setBusy(id, on, busyText, idleText) {
 
 async function summarize() {
   if (!items.length) { alert('Upload some transcripts first.'); return; }
-  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/summarize`,
-                          { method: 'POST' });
+  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/summarize`, { method: 'POST' });
   if (!res.ok) { alert(await apiError(res)); return; }
   setBusy('summarize-btn', true, '✦ Summarising…', '✦ Summarise calls');
   poll();
 }
 
 async function buildTrends() {
-  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/trends`,
-                          { method: 'POST' });
+  const res = await fetch(`/api/projects/${PROJECT_ID}/transcripts/trends`, { method: 'POST' });
   if (!res.ok) { alert(await apiError(res)); return; }
   setBusy('trends-btn', true, '✦ Working…', '✦ Build');
   poll();
@@ -238,8 +374,7 @@ async function poll() {
 
       items = s.transcripts || items;
       trends = s.trend_data || trends;
-      render();
-      renderTrends();
+      renderAll();
 
       const callsRunning  = s.calls  && s.calls.status  === 'running';
       const trendsRunning = s.trends && s.trends.status === 'running';
@@ -258,9 +393,10 @@ async function poll() {
   }
 }
 
+// ── Trends ────────────────────────────────────────────────────────────────
 function renderTrends() {
-  const body = document.getElementById('trends-body');
-  const when = document.getElementById('trends-when');
+  const body  = document.getElementById('trends-body');
+  const when  = document.getElementById('trends-when');
   const cards = (trends && trends.trends) || [];
   const miles = (trends && trends.milestones) || [];
 
@@ -268,80 +404,71 @@ function renderTrends() {
     ? `drafted ${fmtWhen(trends.generated_at)}` : '';
 
   if (!cards.length && !miles.length) {
-    body.innerHTML = `<p class="text-sm text-gray-400">
-      Nothing yet. Summarise the calls first, then Build reads those summaries and
-      draws out what only shows up across quarters.</p>`;
+    body.innerHTML = `<div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
+      <p class="text-sm text-gray-400">Nothing yet. Summarise the calls, then Build reads those
+        summaries and draws out what only shows up across quarters.</p></div>`;
     return;
   }
 
   body.innerHTML = `
-    ${cards.length ? `<div class="grid md:grid-cols-2 gap-4">${cards.map(c => `
-      <div class="border border-gray-200 border-t-4 ${TONE_CLASS[c.tone] || 'border-t-gray-400'} rounded-lg p-4">
-        <h4 class="text-sm font-semibold text-gray-900 mb-1.5">${escHtml(c.title)}</h4>
+    ${cards.length ? `<div class="grid md:grid-cols-2 gap-5">${cards.map(c => `
+      <div class="tcard ${TONE_CLASS[c.tone] || ''} bg-white border border-gray-200 rounded-xl p-6">
+        <h3 class="text-sm font-bold text-gray-900 mb-2">${escHtml(c.title)}</h3>
         <p class="text-sm text-gray-600 leading-relaxed">${escHtml(c.body)}</p>
       </div>`).join('')}</div>` : ''}
 
     ${miles.length ? `
-      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mt-6 mb-3">Milestones</p>
-      <div class="border-l-2 border-gray-100 pl-4 space-y-4">${miles.map(m => `
-        <div class="relative">
-          <span class="absolute -left-[1.32rem] top-1.5 w-2 h-2 rounded-full bg-blue-500"></span>
-          <p class="text-[11px] uppercase tracking-wide text-gray-400">${escHtml(m.period)}</p>
-          <p class="text-sm font-semibold text-gray-900">${escHtml(m.title)}</p>
-          <p class="text-sm text-gray-600 leading-relaxed mt-0.5">${escHtml(m.description)}</p>
-        </div>`).join('')}</div>` : ''}`;
+      <div class="bg-white border border-gray-200 rounded-xl p-7 mt-5">
+        <h3 class="text-base font-bold text-gray-900 mb-6">Key milestones</h3>
+        <div class="border-l-2 border-gray-100 pl-6 space-y-6">${miles.map(m => `
+          <div class="relative">
+            <span class="absolute -left-[1.92rem] top-0.5 w-6 h-6 rounded-full bg-[#eef1f5] border border-gray-200
+              text-[10px] font-bold text-gray-500 flex items-center justify-center">${escHtml(yearDot(m.period))}</span>
+            <p class="text-[11px] uppercase tracking-wide text-gray-400">${escHtml(m.period)}</p>
+            <p class="text-sm font-bold text-gray-900 mt-0.5">${escHtml(m.title)}</p>
+            <p class="text-sm text-gray-600 leading-relaxed mt-1">${escHtml(m.description)}</p>
+          </div>`).join('')}</div>
+      </div>` : ''}`;
 }
 
-async function saveMeta(id) {
-  const q  = document.getElementById(`q-${id}`).value;
-  const fy = document.getElementById(`fy-${id}`).value;
-  const cd = document.getElementById(`cd-${id}`).value;
-  const res = await fetch(`/api/transcripts/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fiscal_quarter: q, fiscal_year: fy, call_date: cd }),
-  });
-  if (!res.ok) { alert(await apiError(res)); return; }
-  items = await res.json();
-  editing.delete(id);
-  render();
-  if (TICKER) loadChart();
+function yearDot(periodText) {
+  const m = String(periodText || '').match(/(20)(\d{2})/);
+  return m ? m[2] : '•';
 }
 
-async function remove(id) {
-  if (!confirm('Delete this transcript?')) return;
-  await fetch(`/api/transcripts/${id}`, { method: 'DELETE' });
-  await load();
+// ── Price table ───────────────────────────────────────────────────────────
+function renderPriceTable() {
+  const body = document.getElementById('price-rows');
+  const rows = items.slice().sort((a, b) => (b.call_date || '').localeCompare(a.call_date || ''));
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="px-4 py-10 text-center text-sm text-gray-400">
+      No transcripts yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(t => {
+    const p = t.prices || {};
+    const exec = people(t);
+    return `<tr class="border-b border-gray-50 hover:bg-gray-50/60">
+      <td class="px-4 py-2.5 font-mono font-semibold text-gray-900">${escHtml(period(t))}</td>
+      <td class="px-4 py-2.5 text-gray-600 whitespace-nowrap">${t.call_date ? fmtDay(t.call_date) : '—'}</td>
+      <td class="px-4 py-2.5 text-xs text-gray-500">${exec || '<span class="text-gray-300">—</span>'}</td>
+      <td class="px-4 py-2.5 text-right tnum text-gray-700">${money(p.before_price) ?? '—'}</td>
+      <td class="px-4 py-2.5 text-right tnum text-gray-700">${money(p.after_price) ?? '—'}</td>
+      <td class="px-4 py-2.5 text-right tnum font-semibold ${tone(p.reaction)}">${signed(p.reaction) ?? '—'}</td>
+      <td class="px-4 py-2.5 text-right tnum ${tone(p.between)}">${signed(p.between) ?? '—'}</td>
+      <td class="px-4 py-2.5">${t.sentiment
+        ? `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold ${SENT_CLASS[t.sentiment] || SENT_CLASS.Neutral}">${escHtml(t.sentiment)}</span>`
+        : '<span class="text-gray-300 text-xs">—</span>'}</td>
+    </tr>`;
+  }).join('');
 }
 
-function toggleEdit(id) {
-  editing.has(id) ? editing.delete(id) : editing.add(id);
-  render();
-}
-
-function setSort(v) { sort = v; render(); }
-
-function sorted() {
-  const copy = items.slice();
-  const rx = x => (x.prices || {}).reaction;
-  const by = {
-    'date-desc':     (a, b) => (b.call_date || '').localeCompare(a.call_date || ''),
-    'date-asc':      (a, b) => (a.call_date || '').localeCompare(b.call_date || ''),
-    // Missing figures sort last either way rather than pretending to be zero.
-    'reaction-desc': (a, b) => (rx(b) ?? -Infinity) - (rx(a) ?? -Infinity),
-    'reaction-asc':  (a, b) => (rx(a) ??  Infinity) - (rx(b) ??  Infinity),
-  }[sort];
-  return copy.sort(by);
-}
-
-// ── Render ────────────────────────────────────────────────────────────────
-function metric(label, value, from, to, note) {
-  const win = from && to ? `${from} → ${to}` : '';
-  return `
-    <div class="flex-1 min-w-[8.5rem]">
-      <p class="text-[10px] uppercase tracking-wide text-gray-400">${label}</p>
-      <p class="text-lg font-semibold font-mono ${tone(value)}">${signed(value) ?? '—'}</p>
-      <p class="text-[10px] text-gray-300 leading-tight">${escHtml(note || win)}</p>
-    </div>`;
+// ── Call cards ────────────────────────────────────────────────────────────
+function statBox(label, value, cls) {
+  return `<div class="bg-[#f8fafc] border border-gray-100 rounded-lg px-3 py-2">
+    <p class="text-[10px] uppercase tracking-wide text-gray-400 whitespace-nowrap">${label}</p>
+    <p class="text-base font-bold tnum ${cls || 'text-gray-800'}">${value ?? '—'}</p>
+  </div>`;
 }
 
 function render() {
@@ -351,100 +478,121 @@ function render() {
   if (!items.length) {
     el.innerHTML = `<div class="text-center py-16 text-gray-400">
       <div class="text-4xl mb-3">🗒️</div>
-      <p class="text-sm">No transcripts yet. Upload a few quarters and the price
-        moves around each call fill in automatically.</p>
+      <p class="text-sm">No transcripts yet. Add a few quarters under “Add &amp; Manage” and the
+        price moves around each call fill in automatically.</p>
     </div>`;
     return;
   }
 
   el.innerHTML = sorted().map(t => {
     const p = t.prices || {};
-    const isEditing = editing.has(t.id);
+    const exec = people(t);
     return `
-    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-      <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
+    <div class="bg-white rounded-xl border border-gray-200 mb-5 overflow-hidden">
+      <div class="bg-[#f8fafc] border-b border-gray-200 px-5 py-3.5 flex items-start justify-between gap-3 flex-wrap">
         <div class="min-w-0">
-          <h3 class="text-base font-semibold text-gray-900 font-mono">${escHtml(t.title)}</h3>
-          ${t.headline ? `<p class="text-sm text-gray-700 mt-1">${escHtml(t.headline)}</p>` : ''}
-          <p class="text-xs text-gray-400 mt-0.5 truncate">${escHtml(t.filename)}${
-            people(t)}</p>
+          <p class="text-sm font-bold text-gray-900">
+            <span class="font-mono">${escHtml(period(t))}</span>
+            ${t.headline ? ` — ${escHtml(t.headline.replace(/^Q\d\s*\d*\s*[—-]\s*/, ''))}` : ''}
+          </p>
+          <p class="text-xs text-gray-400 mt-0.5">${t.call_date ? fmtDay(t.call_date) : 'no call date'}</p>
+          ${exec ? `<p class="text-[11px] text-gray-400 mt-1">${exec}</p>` : ''}
         </div>
-        ${t.sentiment ? `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold ${
-          SENT_CLASS[t.sentiment] || SENT_CLASS.Neutral}">${escHtml(t.sentiment)}</span>` : ''}
-        <div class="flex gap-3 flex-shrink-0">
-          <button onclick="toggleEdit(${t.id})"
-            class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${isEditing ? 'Cancel' : 'Edit'}</button>
+        <div class="flex items-center gap-3 flex-shrink-0">
+          ${t.sentiment ? `<span class="px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+            SENT_CLASS[t.sentiment] || SENT_CLASS.Neutral}">${escHtml(t.sentiment)}</span>` : ''}
           <a href="/api/transcripts/${t.id}/file" target="_blank"
-            class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Open</a>
-          <button onclick="remove(${t.id})"
-            class="text-xs text-gray-300 hover:text-red-500 transition-colors">Delete</button>
+            class="text-xs text-blue-600 hover:text-blue-800 whitespace-nowrap">📄 Transcript</a>
         </div>
       </div>
 
-      ${isEditing ? `
-        <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mb-3">
-          <label class="text-xs text-gray-500">Quarter
-            <select id="q-${t.id}" class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white">
-              <option value="">—</option>
-              ${[1, 2, 3, 4].map(q => `<option value="${q}" ${t.fiscal_quarter === q ? 'selected' : ''}>Q${q}</option>`).join('')}
-            </select>
-          </label>
-          <label class="text-xs text-gray-500">Fiscal year
-            <input id="fy-${t.id}" type="number" min="1990" max="2100" value="${t.fiscal_year ?? ''}"
-              class="block mt-1 w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" />
-          </label>
-          <label class="text-xs text-gray-500">Call date
-            <input id="cd-${t.id}" type="date" value="${t.call_date || ''}"
-              class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" />
-          </label>
-          <button onclick="saveMeta(${t.id})"
-            class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+      <div class="grid md:grid-cols-2 gap-x-8 gap-y-5 p-5">
+        <div>
+          <div class="grid grid-cols-4 gap-2 mb-4">
+            ${statBox('2d Before', money(p.before_price))}
+            ${statBox('2d After', money(p.after_price))}
+            ${statBox('Impact', signed(p.reaction), tone(p.reaction))}
+            ${statBox('Between', signed(p.between), tone(p.between))}
+          </div>
+          <h4 class="text-xs font-bold text-gray-700 uppercase tracking-wide mb-1.5">Call summary</h4>
+          <p class="text-sm text-gray-600 leading-relaxed">${
+            t.summary ? escHtml(t.summary) : '<span class="text-gray-400">Not summarised yet.</span>'}</p>
+          ${(t.themes || []).length ? `<div class="flex flex-wrap gap-1.5 mt-3">${
+            t.themes.map(x => `<span class="px-2 py-0.5 bg-[#eef1f5] text-gray-600 rounded text-[11px]">${escHtml(x)}</span>`).join('')
+          }</div>` : ''}
         </div>
-      ` : ''}
-
-      <div class="flex gap-6 flex-wrap border-t border-gray-50 pt-3">
-        <div class="flex-1 min-w-[8.5rem]">
-          <p class="text-[10px] uppercase tracking-wide text-gray-400">Call date</p>
-          <p class="text-lg font-semibold text-gray-800">${t.call_date ? fmtDay(t.call_date) : '—'}</p>
-          <p class="text-[10px] text-gray-300 leading-tight">&nbsp;</p>
+        <div>
+          <h4 class="text-xs font-bold text-gray-700 uppercase tracking-wide mb-1.5">Key highlights</h4>
+          <p class="text-sm text-gray-600 leading-relaxed">${
+            t.highlights ? escHtml(t.highlights) : '<span class="text-gray-400">—</span>'}</p>
+          <p class="text-[11px] text-gray-300 mt-3">${escHtml(t.filename || '')}</p>
         </div>
-        ${metric('Earnings reaction', p.reaction, p.reaction_from, p.reaction_to)}
-        ${metric('Between calls', p.between, p.between_from, p.between_to,
-                 p.between_label ? `since ${p.between_label.split(' - ')[1] || ''}` : 'no prior call')}
       </div>
-
-      ${t.summary ? `
-        <div class="grid md:grid-cols-2 gap-x-8 gap-y-4 border-t border-gray-100 mt-4 pt-4">
-          <div>
-            <p class="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">Call summary</p>
-            <p class="text-sm text-gray-700 leading-relaxed">${escHtml(t.summary)}</p>
-            ${(t.themes || []).length ? `<div class="flex flex-wrap gap-1.5 mt-3">${
-              t.themes.map(x => `<span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-[11px]">${escHtml(x)}</span>`).join('')
-            }</div>` : ''}
-          </div>
-          <div>
-            <p class="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">Key highlights</p>
-            <p class="text-sm text-gray-700 leading-relaxed">${escHtml(t.highlights || '')}</p>
-          </div>
-        </div>` : ''}
     </div>`;
   }).join('');
+}
+
+// ── Add & manage list ─────────────────────────────────────────────────────
+function renderManage() {
+  const el = document.getElementById('manage-list');
+  if (!items.length) { el.innerHTML = ''; return; }
+  el.innerHTML = items.slice()
+    .sort((a, b) => (b.call_date || '').localeCompare(a.call_date || ''))
+    .map(t => {
+      const open = editing.has(t.id);
+      return `
+      <div class="bg-white rounded-xl border border-gray-200 p-4 mb-3">
+        <div class="flex items-start justify-between gap-3 flex-wrap">
+          <div class="min-w-0">
+            <p class="font-mono text-sm font-semibold text-gray-900">${escHtml(t.title)}</p>
+            <p class="text-xs text-gray-400 mt-0.5 truncate">${escHtml(t.filename)}</p>
+          </div>
+          <div class="flex gap-3 flex-shrink-0">
+            <button onclick="toggleEdit(${t.id})"
+              class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${open ? 'Cancel' : 'Edit'}</button>
+            <a href="/api/transcripts/${t.id}/file" target="_blank"
+              class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Open</a>
+            <button onclick="remove(${t.id})"
+              class="text-xs text-gray-300 hover:text-red-500 transition-colors">Delete</button>
+          </div>
+        </div>
+        ${open ? `
+          <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mt-3">
+            <label class="text-xs text-gray-500">Quarter
+              <select id="q-${t.id}" class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white">
+                <option value="">—</option>
+                ${[1, 2, 3, 4].map(q => `<option value="${q}" ${t.fiscal_quarter === q ? 'selected' : ''}>Q${q}</option>`).join('')}
+              </select>
+            </label>
+            <label class="text-xs text-gray-500">Fiscal year
+              <input id="fy-${t.id}" type="number" min="1990" max="2100" value="${t.fiscal_year ?? ''}"
+                class="block mt-1 w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" />
+            </label>
+            <label class="text-xs text-gray-500">Call date
+              <input id="cd-${t.id}" type="date" value="${t.call_date || ''}"
+                class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-sm" />
+            </label>
+            <button onclick="saveMeta(${t.id})"
+              class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+          </div>` : ''}
+      </div>`;
+    }).join('');
 }
 
 // ── Chart ─────────────────────────────────────────────────────────────────
 const PERIODS = [['1y', '1Y'], ['3y', '3Y'], ['5y', '5Y']];
 const CW = 820, CH = 240, CPAD = { t: 14, r: 14, b: 24, l: 46 };
-let period = '3y';
+let period_ = '3y';
 
 function renderPeriodPicker() {
   document.getElementById('period-picker').innerHTML = PERIODS.map(([key, label], i) => `
     <button onclick="setPeriod('${key}')"
       class="px-2.5 py-1 font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''}
-        ${key === period ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}">
+        ${key === period_ ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}">
       ${label}</button>`).join('');
 }
 
-async function setPeriod(p) { period = p; renderPeriodPicker(); await loadChart(); }
+async function setPeriod(p) { period_ = p; renderPeriodPicker(); await loadChart(); }
 
 async function loadChart() {
   const card = document.getElementById('chart-card');
@@ -459,7 +607,7 @@ async function loadChart() {
 
   let d;
   try {
-    const res = await fetch(`/api/market/${encodeURIComponent(TICKER)}/history?period=${period}`);
+    const res = await fetch(`/api/market/${encodeURIComponent(TICKER)}/history?period=${period_}`);
     if (!res.ok) { status.textContent = await apiError(res); return; }
     d = await res.json();
   } catch (e) {
@@ -486,7 +634,7 @@ async function loadChart() {
     if (idx < 0) return '';
     const x = X(idx);
     const rx = (t.prices || {}).reaction;
-    const color = rx == null ? '#9ca3af' : (rx >= 0 ? '#16a34a' : '#ef4444');
+    const color = rx == null ? '#9ca3af' : (rx >= 0 ? '#3a8a5c' : '#c0392b');
     return `<line x1="${x}" y1="${CPAD.t}" x2="${x}" y2="${CH - CPAD.b}"
               stroke="${color}" stroke-width="1" stroke-dasharray="3 3" opacity="0.55"/>
             <circle cx="${x}" cy="${Y(s[idx])}" r="3" fill="${color}"/>`;
@@ -512,14 +660,14 @@ async function loadChart() {
   document.getElementById('chart-wrap').insertAdjacentHTML('afterbegin', `
     <svg id="chart-svg" viewBox="0 0 ${CW} ${CH}" width="100%" style="display:block">
       ${grid.join('')}${ticks.join('')}${marks}
-      <path d="${path}" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round"/>
+      <path d="${path}" fill="none" stroke="#5b7a94" stroke-width="2" stroke-linejoin="round"/>
     </svg>`);
 
   const marked = items.filter(t => t.call_date).length;
   document.getElementById('chart-legend').innerHTML =
     `${escHtml(d.ticker)} · <span class="text-gray-400">${marked} call${marked === 1 ? '' : 's'} marked,
-     <span class="text-green-600">green</span> up on the print,
-     <span class="text-red-500">red</span> down</span>`;
+     <span class="text-[#3a8a5c]">green</span> up on the print,
+     <span class="text-[#c0392b]">red</span> down</span>`;
 }
 
 load();

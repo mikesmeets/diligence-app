@@ -2300,6 +2300,10 @@ def _price_moves(ticker, rows):
         before, after = at(before_i), at(after_i)
 
         out[row['id']] = {
+            # The two closes themselves, so the price table can show the levels
+            # the percentages were computed from.
+            'before_price':   before,
+            'after_price':    after,
             'reaction':       pct(after, before),
             'reaction_from':  dates[before_i] if before is not None else None,
             'reaction_to':    dates[after_i] if after is not None else None,

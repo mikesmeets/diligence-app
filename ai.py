@@ -283,7 +283,7 @@ def _is_unsupported_param(exc):
 # request small however many quarters you hold, and it keeps the trends
 # consistent with the per-call cards a reader sees underneath them.
 
-SENTIMENTS = ['Bullish', 'Mixed', 'Bearish', 'Neutral']
+SENTIMENTS = ['Bullish', 'Cautious', 'Mixed', 'Bearish', 'Neutral']
 
 CALL_SYSTEM_PROMPT = """You are assisting a professional investor reading earnings \
 call transcripts to build a view of a business over time.
@@ -306,7 +306,8 @@ Move since the prior call: {between}
 Write:
 - headline: the quarter plus a short phrase capturing what made this call matter,
   in the style "Q3 2024 - Guidance Cut on Creator Churn". Under 70 characters.
-- sentiment: one of Bullish, Mixed, Bearish, Neutral - management's tone and the
+- sentiment: one of Bullish, Cautious, Mixed, Bearish, Neutral - management's tone
+  and the
   substance of the results together, not the share price reaction.
 - ceo / cfo / ir: names of the speakers holding those roles on this call, taken from
   the speaker list. Empty string if not identifiable.
