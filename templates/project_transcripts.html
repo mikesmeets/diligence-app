@@ -522,9 +522,10 @@ function render() {
           }</div>` : ''}
         </div>
         <div>
-          <h4 class="text-xs font-bold text-gray-700 uppercase tracking-wide mb-1.5">Key highlights</h4>
+          <h4 class="text-xs font-bold text-gray-700 uppercase tracking-wide mb-1.5">Q&amp;A highlights</h4>
           <p class="text-sm text-gray-600 leading-relaxed">${
-            t.highlights ? escHtml(t.highlights) : '<span class="text-gray-400">—</span>'}</p>
+            t.highlights ? escHtml(t.highlights)
+                         : '<span class="text-gray-400">Not summarised yet.</span>'}</p>
           <p class="text-[11px] text-gray-300 mt-3">${escHtml(t.filename || '')}</p>
         </div>
       </div>

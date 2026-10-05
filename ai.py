@@ -311,10 +311,14 @@ Write:
   substance of the results together, not the share price reaction.
 - ceo / cfo / ir: names of the speakers holding those roles on this call, taken from
   the speaker list. Empty string if not identifiable.
-- summary: one paragraph on what the quarter was about and why it landed the way it
-  did. 90-140 words.
-- highlights: one paragraph of the specific disclosures worth remembering - figures,
-  guidance, segment detail, product news. 90-140 words.
+- summary: what the quarter was about and why it landed the way it did. Keep it
+  tight: 45-70 words, no preamble, no restating the headline.
+- highlights: one paragraph on the analyst Q&A specifically, not the prepared
+  remarks: what analysts pushed hardest on, what management answered plainly, and
+  what they deflected or declined to quantify. Name the analyst or firm where the
+  transcript gives it. Any number first disclosed in the Q&A belongs here.
+  Keep it tight: 45-70 words. If the transcript has no Q&A section, say so in one
+  line rather than summarising the prepared remarks again.
 - themes: 3-5 short tags of two or three words each, e.g. "Creator Churn",
   "Margin Expansion".
 
@@ -478,7 +482,7 @@ def summarize_trends(project, calls):
             f"Price reaction: {c.get('reaction') or 'n/a'}; "
             f"since prior call: {c.get('between') or 'n/a'}\n"
             f"Summary: {c.get('summary') or '—'}\n"
-            f"Highlights: {c.get('highlights') or '—'}"
+            f"Q&A highlights: {c.get('highlights') or '—'}"
         )
 
     prompt = _fill(trends_prompt(), (
