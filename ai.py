@@ -288,61 +288,70 @@ SENTIMENTS = ['Bullish', 'Cautious', 'Mixed', 'Bearish', 'Neutral']
 CALL_SYSTEM_PROMPT = """You are assisting a professional investor reading earnings \
 call transcripts to build a view of a business over time.
 
-Summarise what management actually said and what changed versus prior quarters. Be \
-specific: name products, segments, figures and guidance where the transcript gives \
-them. Prefer a concrete number to an adjective. Do not speculate beyond the \
-transcript, and do not give investment advice — the reader forms their own view.
+Write the way a good analyst takes notes for themselves: lead with the judgement, \
+then the evidence. Be specific - name products, segments, figures, guidance and \
+people where the transcript gives them, and prefer a concrete number to an \
+adjective. Do not speculate beyond your sources, and do not give investment advice; \
+the reader forms their own view.
 
-Where the transcript does not support a field, leave it empty rather than guessing. \
-Executive names must come from the transcript's speaker list, not from memory."""
+Where a field is not supported, leave it empty rather than guessing. Executive names \
+must come from the transcript's speaker list, not from memory."""
 
 CALL_PROMPT = """Summarise this earnings call for {name} ({ticker}).
 
 Fiscal period: {period}
 Call date: {call_date}
-Share price reaction around the call: {reaction}
+Share price around the call: {reaction}
 Move since the prior call: {between}
-
+{research}
 Write:
 - headline: the quarter plus a short phrase capturing what made this call matter,
-  in the style "Q3 2024 - Guidance Cut on Creator Churn". Under 70 characters.
+  in the style "Q3 2024 - Guidance Cut On Creator Churn". Under 70 characters.
 - sentiment: one of Bullish, Cautious, Mixed, Bearish, Neutral - management's tone
   and the substance of the results together, not the share price reaction.
 - ceo / cfo / ir: names of the speakers holding those roles on this call, taken from
   the speaker list. Empty string if not identifiable.
-- summary: what the quarter was about and why it landed the way it did. Keep it
-  tight: 45-70 words, no preamble, no restating the headline.
-- highlights: one paragraph on the analyst Q&A specifically, not the prepared
-  remarks: what analysts pushed hardest on, what management answered plainly, and
-  what they deflected or declined to quantify. Name the analyst or firm where the
-  transcript gives it. Any number first disclosed in the Q&A belongs here.
-  Keep it tight: 45-70 words. If the transcript has no Q&A section, say so in one
-  line rather than summarising the prepared remarks again.
-- themes: 3-5 short tags of two or three words each, e.g. "Creator Churn",
-  "Margin Expansion".
+- summary: 45-70 words. Open with what the quarter actually was, then why it landed
+  the way it did. If anything about the call was unusual - a new or interim
+  executive, a first call after a transition, guidance withdrawn, an unscheduled
+  announcement - say so first; that context matters more than the figures. No
+  preamble, no restating the headline.
+- highlights: 45-70 words on the analyst Q&A, not the prepared remarks. Open by
+  characterising the room - whether analysts were supportive, sceptical, divided, or
+  focused on one issue - then name the specific thing they pushed on and how
+  management handled it, including what was deflected or left unquantified. Quote a
+  short phrase from management where one is telling. Name the analyst or firm if the
+  transcript gives it. If there is no Q&A section, say so in one line.
+- market_reaction: 25-45 words reconciling the share price move with the call. Say
+  what the move appears to be responding to, and whether that is company-specific or
+  looks like the market or sector moving. If the price moved before the call or in a
+  direction the call does not explain, say so. Empty string if there is no price
+  data or nothing honest to say.
+- themes: 3-5 tags, each a specific noun phrase rather than a category - "Creator
+  Churn", "Seat-Based Pricing", "New CFO Day 21", "Revenue +43% YoY". A tag carrying
+  a figure is good. Avoid bare words like "Growth" or "Guidance".
 
 TRANSCRIPT
 {transcript}"""
 
-TRENDS_PROMPT = """Below are summaries of {count} consecutive earnings calls for \
-{name} ({ticker}), oldest first, each with the share price reaction to that call.
+RESEARCH_PROMPT = """Find what was reported about {name} ({ticker})'s {period} \
+earnings, announced around {call_date}.
 
-Identify what the business looks like across the whole span - the arcs that only show \
-up when the quarters are read together. Judge trends by what management said and how \
-the numbers moved, and note where the two diverged.
+The shares moved {reaction} across the two trading days either side of the call.
 
-Write:
-- trends: 4-7 cards. Each has a title that makes a claim rather than naming a topic
-  ("Marketplace Pivot Traded Growth For Creator Attrition", not "Marketplace"), a
-  tone of good, warn or bad from the shareholder's point of view, and a body of
-  70-130 words citing the specific quarters that show it.
-- milestones: 6-12 entries in chronological order, each with a period (e.g.
-  "Q4 2023 - February 2024"), a title, and a 40-90 word description. Cover the
-  turning points: strategy changes, management changes, the largest price reactions,
-  and the quarters where the trajectory visibly shifted.
+Search for contemporaneous coverage - the earnings reaction pieces, the "why the \
+stock moved" articles, results-versus-estimates reports. Then tell me, in under 150 \
+words:
 
-CALL SUMMARIES
-{summaries}"""
+- what the result was against consensus, if reported
+- what commentators said drove the move
+- whether anything company-specific or market-wide was happening that week
+- anything notable that would not appear in the transcript itself (an analyst
+  downgrade, a guidance cut landing badly, a sector-wide selloff)
+
+Report only what the sources say. If the search turns up nothing useful for this \
+specific quarter, say so plainly - do not reason from the price move alone, and do \
+not fill the gap from memory."""
 
 _CALL_SCHEMA = {
     'type': 'object',
@@ -354,9 +363,11 @@ _CALL_SCHEMA = {
         'ir':         {'type': 'string'},
         'summary':    {'type': 'string'},
         'highlights': {'type': 'string'},
+        'market_reaction': {'type': 'string'},
         'themes':     {'type': 'array', 'items': {'type': 'string'}},
     },
-    'required': ['headline', 'sentiment', 'summary', 'highlights', 'themes'],
+    'required': ['headline', 'sentiment', 'summary', 'highlights',
+                 'market_reaction', 'themes'],
     'additionalProperties': False,
 }
 
@@ -444,9 +455,20 @@ def _fill(template, pairs):
     return out
 
 
-def summarize_call(project, meta, transcript):
-    """Summarise one earnings call. `meta` carries the period and price context."""
+def summarize_call(project, meta, transcript, research=''):
+    """Summarise one earnings call. `meta` carries the period and price context.
+
+    `research` is contemporaneous coverage from research_call(), or '' — the
+    prompt reads it as background, not as a second transcript.
+    """
+    block = ''
+    if (research or '').strip():
+        block = ('\nWHAT WAS REPORTED AT THE TIME (from a web search; treat it as\n'
+                 'background, and say so if it contradicts the transcript)\n'
+                 '<<<BEGIN COVERAGE>>>\n' + research.strip() + '\n<<<END COVERAGE>>>\n')
+
     prompt = _fill(call_prompt(), (
+        ('{research}', block),
         ('{name}',       project.get('name') or ''),
         ('{ticker}',     project.get('ticker') or '—'),
         ('{period}',     meta.get('period') or 'unknown'),
@@ -466,6 +488,7 @@ def summarize_call(project, meta, transcript):
         'ir':         (data.get('ir') or '').strip(),
         'summary':    (data.get('summary') or '').strip(),
         'highlights': (data.get('highlights') or '').strip(),
+        'market_reaction': (data.get('market_reaction') or '').strip(),
         'themes':     themes[:6],
     }
 
@@ -706,3 +729,102 @@ def parse_idea_document(title, body, idea_types=(), sources=(), limit=150_000):
                          else 'low',
         'notes':         (data.get('notes') or '').strip(),
     }
+
+
+# ── Contemporaneous coverage ─────────────────────────────────────────────────
+#
+# A transcript says what management said; it can't say how the print landed. This
+# runs a separate search-enabled call per quarter and hands the result to the
+# summary pass as context.
+#
+# Two passes rather than one because the search tool and structured outputs don't
+# belong in the same request: the summary call is pinned to a JSON schema, and
+# bolting a tool loop onto it risks a 400 on every call. Research is also cheap —
+# it sends the quarter and the price move, not the transcript.
+
+# Dynamic filtering; needs Opus 4.6+ / Sonnet 4.6+. Older models take the basic
+# variant, so the tool type is chosen from the configured model.
+WEB_SEARCH_MODERN = 'web_search_20260209'
+WEB_SEARCH_BASIC  = 'web_search_20250305'
+MODERN_SEARCH_MODELS = (
+    'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7',
+    'claude-opus-4-6', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6',
+)
+
+
+def research_enabled():
+    return (db.get_setting('transcript_research') or '0') == '1'
+
+
+def _search_tool(model_id):
+    tool_type = WEB_SEARCH_MODERN if model_id in MODERN_SEARCH_MODELS else WEB_SEARCH_BASIC
+    return {'type': tool_type, 'name': 'web_search', 'max_uses': 6}
+
+
+def _sources_from(message):
+    """Titles and URLs of the pages the search actually returned."""
+    out, seen = [], set()
+    for block in message.content:
+        if getattr(block, 'type', None) != 'web_search_tool_result':
+            continue
+        content = getattr(block, 'content', None)
+        # A failed search returns a single error object here rather than a list,
+        # and raises nothing — so check the shape before iterating.
+        if not isinstance(content, list):
+            logging.info('Web search returned an error block: %r', content)
+            continue
+        for result in content:
+            url = getattr(result, 'url', None)
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append({'title': (getattr(result, 'title', '') or url)[:200], 'url': url})
+    return out
+
+
+def research_call(project, meta):
+    """What was written about this quarter at the time.
+
+    Returns {'notes': str, 'sources': [{title, url}]}. Raises like the others —
+    the caller decides whether a failed search should stop the summary.
+    """
+    key = api_key()
+    if not key:
+        raise NotConfigured('No Anthropic API key.')
+
+    import anthropic
+
+    prompt = _fill(RESEARCH_PROMPT, (
+        ('{name}',      project.get('name') or ''),
+        ('{ticker}',    project.get('ticker') or '—'),
+        ('{period}',    meta.get('period') or 'the quarter'),
+        ('{call_date}', meta.get('call_date') or 'unknown'),
+        ('{reaction}',  meta.get('reaction') or 'an unknown amount'),
+    ))
+
+    client = anthropic.Anthropic(api_key=key)
+    model_id = model()
+    messages = [{'role': 'user', 'content': prompt}]
+    message = None
+
+    # A server tool can hand back pause_turn mid-search; continue where it left off.
+    for _ in range(4):
+        message = _send(client, {
+            'model': model_id,
+            'max_tokens': 8000,
+            'system': 'You are researching how an earnings report was received at the time. '
+                      'Report only what your sources say, and name the outlet.',
+            'messages': messages,
+            'tools': [_search_tool(model_id)],
+            'output_config': {'effort': effort()},
+        })
+        if getattr(message, 'stop_reason', None) != 'pause_turn':
+            break
+        messages = messages + [{'role': 'assistant', 'content': message.content}]
+
+    if getattr(message, 'stop_reason', None) == 'refusal':
+        raise Refused('Claude declined to research this quarter.')
+
+    notes = '\n'.join(b.text for b in message.content
+                      if getattr(b, 'type', None) == 'text' and getattr(b, 'text', '').strip())
+    return {'notes': notes.strip(), 'sources': _sources_from(message)[:6]}

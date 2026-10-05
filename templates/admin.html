@@ -234,6 +234,28 @@
     </div>
   </div>
 
+
+  <!-- Transcript research -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+      Transcript Research
+    </p>
+    <label class="text-sm text-gray-700 flex items-center gap-2">
+      <input id="f-transcript-research" type="checkbox" onchange="saveAll()" class="rounded" />
+      Search the web for coverage of each call
+    </label>
+    <p class="text-xs text-gray-400 mt-3 leading-relaxed">
+      Before summarising a call, Claude searches for what was written about that quarter
+      at the time — results versus consensus, why commentators said the stock moved, and
+      anything happening that week that the transcript can't mention. The summary gets it
+      as background, each call card gains a short market-reaction note and links to the
+      coverage.
+      <span class="text-amber-600">This adds a second model call per transcript,</span>
+      and web search is billed per search on top of tokens. A failed search costs the
+      coverage, not the summary.
+    </p>
+  </div>
+
   <!-- Model template -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
@@ -632,6 +654,7 @@ async function load() {
   document.getElementById('f-imap-folder').value  = s.imap_folder || 'INBOX';
   document.getElementById('f-imap-poll').value    = s.imap_poll_seconds || 300;
   document.getElementById('f-imap-enabled').checked = s.imap_enabled !== false;
+  document.getElementById('f-transcript-research').checked = !!s.transcript_research;
   document.getElementById('system-prompt').textContent = s.system_prompt;
 
   const sel = document.getElementById('f-model');
@@ -723,6 +746,7 @@ async function saveAll() {
     model:   document.getElementById('f-model').value,
     effort:  document.getElementById('f-effort').value,
     imap_enabled: document.getElementById('f-imap-enabled').checked ? '1' : '0',
+    transcript_research: document.getElementById('f-transcript-research').checked ? '1' : '0',
     prompts,
   });
   if (r) { clearDirty(); status('Saved', 'green'); }

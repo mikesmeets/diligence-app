@@ -2323,16 +2323,18 @@ def _transcripts_for(cur, project_id, project=None):
     cur.execute(
         f'SELECT id, project_id, ticker, fiscal_quarter, fiscal_year, call_date, '
         f'filename, size_bytes, created_at, headline, sentiment, summary, highlights, '
-        f'themes, ceo, cfo, ir, summarized_at FROM project_transcripts '
+        f'themes, ceo, cfo, ir, summarized_at, market_reaction, news '
+        f'FROM project_transcripts '
         f'WHERE project_id = {db.PH} ORDER BY call_date DESC, id DESC',
         (project_id,),
     )
     rows = db.to_dicts(cur.fetchall())
     for row in rows:
-        try:
-            row['themes'] = json.loads(row.get('themes') or '[]')
-        except ValueError:
-            row['themes'] = []
+        for field, blank in (('themes', []), ('news', [])):
+            try:
+                row[field] = json.loads(row.get(field) or '[]')
+            except ValueError:
+                row[field] = blank
     ticker = (project or {}).get('ticker')
     moves = _price_moves(ticker, rows) if rows else {}
     for row in rows:
@@ -2878,6 +2880,7 @@ def get_settings():
         'imap_ready':        inbox.imap_ready(),
         'imap_source':       inbox.imap_source(),
         'imap_enabled':      (db.get_setting('imap_enabled') or '1') == '1',
+        'transcript_research': (db.get_setting('transcript_research') or '0') == '1',
         'imap_poll_seconds': int(db.get_setting('imap_poll_seconds') or 300),
         'inbox_token':        inbox.token(),
         'inbox_token_source': inbox.token_source(),
@@ -2925,7 +2928,7 @@ def save_settings():
     # Mailbox settings. The password follows the write-only rule of every other
     # credential: absent means leave it, the sentinel clears it.
     for key in ('imap_host', 'imap_user', 'imap_folder', 'imap_port',
-                'imap_poll_seconds', 'imap_enabled'):
+                'imap_poll_seconds', 'imap_enabled', 'transcript_research'):
         if key in data:
             db.set_setting(key, (str(data.get(key) or '')).strip())
     if 'imap_password' in data:
@@ -3129,23 +3132,38 @@ def _summarize_calls_worker(project_id, only_missing):
                     continue
 
                 prices = row.get('prices') or {}
-                result = ai.summarize_call(project, {
+                meta = {
                     'period':    row['title'].split(' - ')[1] if ' - ' in row['title'] else '',
                     'call_date': row.get('call_date'),
                     'reaction':  _pct_text(prices.get('reaction')),
                     'between':   _pct_text(prices.get('between')),
-                }, text)
+                }
+
+                # Optional first pass: what was written about the quarter at the
+                # time. A failed search costs the coverage, not the summary.
+                research, sources = '', []
+                if ai.research_enabled():
+                    try:
+                        found = ai.research_call(project, meta)
+                        research, sources = found['notes'], found['sources']
+                    except Exception as exc:
+                        app.logger.info('Market research failed for %s: %s', row['title'], exc)
+
+                result = ai.summarize_call(project, meta, text, research=research)
 
                 with db.get_conn() as conn:
                     db.cursor(conn).execute(
                         f'UPDATE project_transcripts SET headline = {db.PH}, sentiment = {db.PH}, '
                         f'summary = {db.PH}, highlights = {db.PH}, themes = {db.PH}, '
-                        f'ceo = {db.PH}, cfo = {db.PH}, ir = {db.PH}, summarized_at = {db.PH} '
+                        f'ceo = {db.PH}, cfo = {db.PH}, ir = {db.PH}, summarized_at = {db.PH}, '
+                        f'market_reaction = {db.PH}, news = {db.PH}, research_notes = {db.PH} '
                         f'WHERE id = {db.PH}',
                         (result['headline'], result['sentiment'], result['summary'],
                          result['highlights'], json.dumps(result['themes']),
                          result['ceo'], result['cfo'], result['ir'],
-                         datetime.now().isoformat(), row['id']),
+                         datetime.now().isoformat(),
+                         result.get('market_reaction'), json.dumps(sources), research or None,
+                         row['id']),
                     )
                 done += 1
             except Exception as exc:

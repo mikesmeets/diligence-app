@@ -538,6 +538,9 @@ function render() {
             ${statBox('Impact', signed(p.reaction), tone(p.reaction))}
             ${statBox('Between', signed(p.between), tone(p.between))}
           </div>
+          ${p.reaction != null && t.market_reaction ? `
+            <p class="text-xs text-gray-500 leading-relaxed mb-4 pl-3 border-l-2 border-gray-200">
+              ${escHtml(t.market_reaction)}</p>` : ''}
           <h4 class="text-xs font-bold text-gray-700 uppercase tracking-wide mb-1.5">Call summary</h4>
           <p class="text-sm text-gray-600 leading-relaxed">${
             t.summary ? escHtml(t.summary) : '<span class="text-gray-400">Not summarised yet.</span>'}</p>
@@ -550,6 +553,12 @@ function render() {
           <p class="text-sm text-gray-600 leading-relaxed">${
             t.highlights ? escHtml(t.highlights)
                          : '<span class="text-gray-400">Not summarised yet.</span>'}</p>
+          ${(t.news || []).length ? `
+            <p class="text-[10px] uppercase tracking-wide text-gray-400 mt-4 mb-1.5">Coverage at the time</p>
+            <div class="flex flex-col gap-1">${t.news.map(n => `
+              <a href="${escHtml(n.url)}" target="_blank" rel="noopener noreferrer"
+                class="text-xs text-blue-600 hover:text-blue-800 truncate" title="${escHtml(n.url)}">
+                ↗ ${escHtml(n.title)}</a>`).join('')}</div>` : ''}
           <p class="text-[11px] text-gray-300 mt-3">${escHtml(t.filename || '')}</p>
         </div>
       </div>

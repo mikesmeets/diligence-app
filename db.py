@@ -524,6 +524,10 @@ _TRANSCRIPT_MIGRATIONS = [
     ('cfo',          'TEXT'),
     ('ir',           'TEXT'),
     ('summarized_at', 'TEXT'),
+    # How the print landed versus the share price, and the coverage behind it.
+    ('market_reaction', 'TEXT'),
+    ('news',            'TEXT'),   # JSON array of {title, url}
+    ('research_notes',  'TEXT'),
 ]
 
 _PROJECT_MIGRATIONS = [
