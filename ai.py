@@ -307,8 +307,7 @@ Write:
 - headline: the quarter plus a short phrase capturing what made this call matter,
   in the style "Q3 2024 - Guidance Cut on Creator Churn". Under 70 characters.
 - sentiment: one of Bullish, Cautious, Mixed, Bearish, Neutral - management's tone
-  and the
-  substance of the results together, not the share price reaction.
+  and the substance of the results together, not the share price reaction.
 - ceo / cfo / ir: names of the speakers holding those roles on this call, taken from
   the speaker list. Empty string if not identifiable.
 - summary: what the quarter was about and why it landed the way it did. Keep it
