@@ -244,6 +244,21 @@
       <input id="f-transcript-research" type="checkbox" onchange="saveAll()" class="rounded" />
       Search the web for coverage of each call
     </label>
+
+    <label class="text-sm text-gray-700 block mt-4">Build long-term trends from
+      <select id="f-trends-source" onchange="saveAll()"
+        class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="summaries">The call summaries — fast and cheap</option>
+        <option value="transcripts">The full transcripts — slower, more expensive</option>
+      </select>
+    </label>
+    <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+      Summaries are a compressed view, so the trends pass can only see what the per-call
+      pass kept. Reading the transcripts catches what compression loses — wording that
+      changed quarter to quarter, a metric that stopped being reported, a question that
+      kept being asked and never answered — but sends every transcript in one request,
+      which is slow and costs materially more. Long histories are trimmed evenly to fit.
+    </p>
     <p class="text-xs text-gray-400 mt-3 leading-relaxed">
       Before summarising a call, Claude searches for what was written about that quarter
       at the time — results versus consensus, why commentators said the stock moved, and
@@ -655,6 +670,7 @@ async function load() {
   document.getElementById('f-imap-poll').value    = s.imap_poll_seconds || 300;
   document.getElementById('f-imap-enabled').checked = s.imap_enabled !== false;
   document.getElementById('f-transcript-research').checked = !!s.transcript_research;
+  document.getElementById('f-trends-source').value = s.trends_source || 'summaries';
   document.getElementById('system-prompt').textContent = s.system_prompt;
 
   const sel = document.getElementById('f-model');
@@ -747,6 +763,7 @@ async function saveAll() {
     effort:  document.getElementById('f-effort').value,
     imap_enabled: document.getElementById('f-imap-enabled').checked ? '1' : '0',
     transcript_research: document.getElementById('f-transcript-research').checked ? '1' : '0',
+    trends_source: document.getElementById('f-trends-source').value,
     prompts,
   });
   if (r) { clearDirty(); status('Saved', 'green'); }

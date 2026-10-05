@@ -2881,6 +2881,7 @@ def get_settings():
         'imap_source':       inbox.imap_source(),
         'imap_enabled':      (db.get_setting('imap_enabled') or '1') == '1',
         'transcript_research': (db.get_setting('transcript_research') or '0') == '1',
+        'trends_source':       ai.trends_source(),
         'imap_poll_seconds': int(db.get_setting('imap_poll_seconds') or 300),
         'inbox_token':        inbox.token(),
         'inbox_token_source': inbox.token_source(),
@@ -2928,7 +2929,8 @@ def save_settings():
     # Mailbox settings. The password follows the write-only rule of every other
     # credential: absent means leave it, the sentinel clears it.
     for key in ('imap_host', 'imap_user', 'imap_folder', 'imap_port',
-                'imap_poll_seconds', 'imap_enabled', 'transcript_research'):
+                'imap_poll_seconds', 'imap_enabled', 'transcript_research',
+                'trends_source'):
         if key in data:
             db.set_setting(key, (str(data.get(key) or '')).strip())
     if 'imap_password' in data:
@@ -3088,6 +3090,10 @@ def refresh_prices():
 # for the synthesis, which keeps the unique (project_id, field) index meaningful
 # and stops two runs of the same job overlapping.
 
+# Roughly 400k tokens of transcript across the whole run - large, but bounded,
+# and well inside the 1M context with room for the response.
+TRENDS_TRANSCRIPT_BUDGET = 1_600_000
+
 CALLS_JOB  = 'transcript_calls'
 TRENDS_JOB = 'transcript_trends'
 
@@ -3193,6 +3199,16 @@ def _trends_worker(project_id):
         # Oldest first: the synthesis is about a trajectory, so the order it
         # reads them in is the order they happened.
         summarized = [r for r in rows if (r.get('summary') or '').strip()]
+        # _transcripts_for omits the storage columns; fetch them for the
+        # transcripts mode rather than widening that query for every caller.
+        with db.get_conn() as conn:
+            cur = db.cursor(conn)
+            cur.execute(
+                f'SELECT id, object_key, filename FROM project_transcripts '
+                f'WHERE project_id = {db.PH}', (project_id,))
+            files = {r['id']: r for r in db.to_dicts(cur.fetchall())}
+        for r in summarized:
+            r.update(files.get(r['id']) or {})
         summarized.sort(key=lambda r: r.get('call_date') or '')
         if len(summarized) < 2:
             _job_finish(project_id, TRENDS_JOB, 'error',
@@ -3213,7 +3229,31 @@ def _trends_worker(project_id):
                 'between':    _pct_text(prices.get('between')),
             })
 
-        result = ai.summarize_trends(project, calls)
+        # Reading the transcripts themselves catches what the per-call pass
+        # dropped - wording that changed, a metric that stopped being reported -
+        # at the cost of a much larger request. The budget keeps a long history
+        # from producing one enormous call; each transcript is trimmed evenly
+        # rather than dropping whole quarters, since the arc needs all of them.
+        source = ai.trends_source()
+        if source == 'transcripts':
+            budget = TRENDS_TRANSCRIPT_BUDGET // max(1, len(calls))
+            trimmed = 0
+            for row, call in zip(summarized, calls):
+                try:
+                    raw = storage.read(row['object_key']) if row.get('object_key') else None
+                except Exception:
+                    raw = None
+                if not raw:
+                    continue
+                text = tx.full_text(raw, row.get('filename') or '')
+                if len(text) > budget:
+                    text, trimmed = text[:budget], trimmed + 1
+                call['transcript'] = text
+            if trimmed:
+                app.logger.info('Trends: trimmed %s of %s transcripts to fit the budget',
+                                trimmed, len(calls))
+
+        result = ai.summarize_trends(project, calls, source=source)
         with db.get_conn() as conn:
             db.cursor(conn).execute(
                 f'UPDATE projects SET transcript_trends = {db.PH}, '

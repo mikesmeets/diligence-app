@@ -373,6 +373,33 @@ Write:
 CALL SUMMARIES
 {summaries}"""
 
+TRENDS_FULL_PROMPT = """Below are {count} consecutive earnings calls for {name} \
+({ticker}), oldest first. Each carries the share price reaction to that call, a short \
+summary, and the transcript itself.
+
+Read them as a run. Identify what the business looks like across the whole span - the \
+arcs that only show up when the quarters are read together, and especially what no \
+single call reveals: language management introduced, leaned on, then quietly dropped; a \
+metric reported every quarter until it stopped; a question analysts asked repeatedly and \
+never got answered; the gap between what was guided and what arrived.
+
+Quote management where the wording itself is the evidence, and name the quarter. Judge \
+trends by what was said and how the numbers moved, and say where the two diverged.
+
+Write:
+- trends: 4-7 cards. Each has a title that makes a claim rather than naming a topic
+  ("Marketplace Pivot Traded Growth For Creator Attrition", not "Marketplace"), a
+  tone of good, warn or bad from the shareholder's point of view, and a body of
+  70-130 words. Carry at least one hard figure with its direction of travel - "43%
+  growth in Q2 2021 to -1% by Q4 2022" - and cite the quarters that show it.
+- milestones: 6-12 entries in chronological order, each with a period (e.g.
+  "Q4 2023 - February 2024"), a title, and a 40-90 word description. Cover the
+  turning points: strategy changes, management changes, the largest price reactions,
+  and the quarters where the trajectory visibly shifted.
+
+CALLS
+{summaries}"""
+
 _CALL_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -430,8 +457,16 @@ def call_prompt():
     return db.get_setting('prompt_transcript_call') or CALL_PROMPT
 
 
-def trends_prompt():
-    return db.get_setting('prompt_transcript_trends') or TRENDS_PROMPT
+def trends_source():
+    """'summaries' (default) or 'transcripts' - what the cross-call pass reads."""
+    return 'transcripts' if db.get_setting('trends_source') == 'transcripts' else 'summaries'
+
+
+def trends_prompt(source='summaries'):
+    saved = db.get_setting('prompt_transcript_trends')
+    if saved:
+        return saved
+    return TRENDS_FULL_PROMPT if source == 'transcripts' else TRENDS_PROMPT
 
 
 def _structured(prompt, system, schema, max_tokens=16000):
@@ -513,8 +548,13 @@ def summarize_call(project, meta, transcript, research=''):
     }
 
 
-def summarize_trends(project, calls):
-    """Synthesise the arc across calls. `calls` is oldest-first summary blocks."""
+def summarize_trends(project, calls, source='summaries'):
+    """Synthesise the arc across calls. `calls` is oldest-first.
+
+    With source='transcripts' each entry also carries a `transcript`, so the
+    model reads the calls themselves rather than only what the per-call pass
+    chose to keep.
+    """
     blocks = []
     for c in calls:
         blocks.append(
@@ -525,9 +565,10 @@ def summarize_trends(project, calls):
             f"since prior call: {c.get('between') or 'n/a'}\n"
             f"Summary: {c.get('summary') or '—'}\n"
             f"Q&A highlights: {c.get('highlights') or '—'}"
+            + (f"\n\nTRANSCRIPT\n{c['transcript']}" if c.get("transcript") else "")
         )
 
-    prompt = _fill(trends_prompt(), (
+    prompt = _fill(trends_prompt(source), (
         ('{name}',      project.get('name') or ''),
         ('{ticker}',    project.get('ticker') or '—'),
         ('{count}',     len(calls)),
