@@ -271,6 +271,26 @@
     </p>
   </div>
 
+
+    <div class="grid md:grid-cols-2 gap-4 mt-5 pt-5 border-t border-gray-100">
+      <label class="text-sm text-gray-700">Model for transcript work
+        <select id="f-transcript-model" onchange="saveAll()"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"></select>
+      </label>
+      <label class="text-sm text-gray-700">Effort for transcript work
+        <select id="f-transcript-effort" onchange="saveAll()"
+          class="block mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"></select>
+      </label>
+    </div>
+    <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+      Summarising transcripts is the only bulk job here — dozens of calls per project
+      rather than one write-up — so it runs on its own settings, separate from the model
+      the write-ups use. Summarising is extraction, not research: Sonnet at medium effort
+      costs roughly a fifth of Opus at high and is usually indistinguishable on this task.
+      Output tokens are five times the price of input, and effort is what drives them, so
+      effort is the bigger lever of the two.
+    </p>
+
   <!-- Model template -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
@@ -671,6 +691,10 @@ async function load() {
   document.getElementById('f-imap-enabled').checked = s.imap_enabled !== false;
   document.getElementById('f-transcript-research').checked = !!s.transcript_research;
   document.getElementById('f-trends-source').value = s.trends_source || 'summaries';
+  document.getElementById('f-transcript-model').innerHTML = s.models.map(m =>
+    `<option value="${m.id}" ${m.id === s.transcript_model ? 'selected' : ''}>${m.label}</option>`).join('');
+  document.getElementById('f-transcript-effort').innerHTML = s.efforts.map(e =>
+    `<option value="${e.id}" ${e.id === s.transcript_effort ? 'selected' : ''}>${e.label}</option>`).join('');
   document.getElementById('system-prompt').textContent = s.system_prompt;
 
   const sel = document.getElementById('f-model');
@@ -764,6 +788,8 @@ async function saveAll() {
     imap_enabled: document.getElementById('f-imap-enabled').checked ? '1' : '0',
     transcript_research: document.getElementById('f-transcript-research').checked ? '1' : '0',
     trends_source: document.getElementById('f-trends-source').value,
+    transcript_model: document.getElementById('f-transcript-model').value,
+    transcript_effort: document.getElementById('f-transcript-effort').value,
     prompts,
   });
   if (r) { clearDirty(); status('Saved', 'green'); }

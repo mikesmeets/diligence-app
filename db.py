@@ -528,6 +528,11 @@ _TRANSCRIPT_MIGRATIONS = [
     ('market_reaction', 'TEXT'),
     ('news',            'TEXT'),   # JSON array of {title, url}
     ('research_notes',  'TEXT'),
+    # What the summary actually cost, so spend is measured rather than guessed.
+    ('tokens_in',      'INTEGER'),
+    ('tokens_out',     'INTEGER'),
+    ('cost_usd',       'REAL' if not IS_PG else 'DOUBLE PRECISION'),
+    ('summary_model',  'TEXT'),
 ]
 
 _PROJECT_MIGRATIONS = [

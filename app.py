@@ -2323,7 +2323,8 @@ def _transcripts_for(cur, project_id, project=None):
     cur.execute(
         f'SELECT id, project_id, ticker, fiscal_quarter, fiscal_year, call_date, '
         f'filename, size_bytes, created_at, headline, sentiment, summary, highlights, '
-        f'themes, ceo, cfo, ir, summarized_at, market_reaction, news '
+        f'themes, ceo, cfo, ir, summarized_at, market_reaction, news, '
+        f'tokens_in, tokens_out, cost_usd, summary_model '
         f'FROM project_transcripts '
         f'WHERE project_id = {db.PH} ORDER BY call_date DESC, id DESC',
         (project_id,),
@@ -2616,6 +2617,31 @@ STALE_SECONDS = {
 }
 
 
+def _clear_stale_jobs():
+    """Mark jobs left 'running' by a dead process as interrupted, at startup.
+
+    A worker thread dies with its process, so any row still marked running when
+    we boot cannot be. Without this the job is treated as in flight until its
+    staleness window expires - four hours for a transcript batch - and every
+    attempt to restart it short-circuits.
+    """
+    try:
+        with db.get_conn() as conn:
+            cur = db.cursor(conn)
+            cur.execute(
+                f"UPDATE generation_jobs SET status = {db.PH}, error = {db.PH}, "
+                f"finished_at = {db.PH} WHERE status = {db.PH}",
+                ('error', 'Interrupted - the server restarted while this was running. '
+                          'Anything already finished was saved; run it again for the rest.',
+                 datetime.now().isoformat(), 'running'),
+            )
+    except Exception:
+        logging.exception('Could not clear stale generation jobs')
+
+
+_clear_stale_jobs()
+
+
 def _job_start(project_id, field):
     with db.get_conn() as conn:
         cur = db.cursor(conn)
@@ -2882,6 +2908,8 @@ def get_settings():
         'imap_enabled':      (db.get_setting('imap_enabled') or '1') == '1',
         'transcript_research': (db.get_setting('transcript_research') or '0') == '1',
         'trends_source':       ai.trends_source(),
+        'transcript_model':    ai.transcript_model(),
+        'transcript_effort':   ai.transcript_effort(),
         'imap_poll_seconds': int(db.get_setting('imap_poll_seconds') or 300),
         'inbox_token':        inbox.token(),
         'inbox_token_source': inbox.token_source(),
@@ -2941,6 +2969,11 @@ def save_settings():
             db.set_setting('imap_password', '')
         elif value:
             db.set_setting('imap_password', value)
+
+    if data.get('transcript_model') in dict(ai.MODELS):
+        db.set_setting('transcript_model', data['transcript_model'])
+    if data.get('transcript_effort') in dict(ai.EFFORTS):
+        db.set_setting('transcript_effort', data['transcript_effort'])
 
     if data.get('model') in dict(ai.MODELS):
         db.set_setting('ai_model', data['model'])
@@ -3162,13 +3195,18 @@ def _summarize_calls_worker(project_id, only_missing):
                         f'UPDATE project_transcripts SET headline = {db.PH}, sentiment = {db.PH}, '
                         f'summary = {db.PH}, highlights = {db.PH}, themes = {db.PH}, '
                         f'ceo = {db.PH}, cfo = {db.PH}, ir = {db.PH}, summarized_at = {db.PH}, '
-                        f'market_reaction = {db.PH}, news = {db.PH}, research_notes = {db.PH} '
-                        f'WHERE id = {db.PH}',
+                        f'market_reaction = {db.PH}, news = {db.PH}, research_notes = {db.PH}, '
+                        f'tokens_in = {db.PH}, tokens_out = {db.PH}, cost_usd = {db.PH}, '
+                        f'summary_model = {db.PH} WHERE id = {db.PH}',
                         (result['headline'], result['sentiment'], result['summary'],
                          result['highlights'], json.dumps(result['themes']),
                          result['ceo'], result['cfo'], result['ir'],
                          datetime.now().isoformat(),
                          result.get('market_reaction'), json.dumps(sources), research or None,
+                         (result.get('usage') or {}).get('tokens_in'),
+                         (result.get('usage') or {}).get('tokens_out'),
+                         (result.get('usage') or {}).get('cost'),
+                         (result.get('usage') or {}).get('model'),
                          row['id']),
                     )
                 done += 1

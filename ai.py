@@ -16,13 +16,33 @@ import os
 
 import db
 
-DEFAULT_MODEL = 'claude-opus-5'
+DEFAULT_MODEL = 'claude-opus-5-5'
 
 MODELS = [
-    ('claude-opus-5',   'Claude Opus 5 — most capable'),
-    ('claude-sonnet-5', 'Claude Sonnet 5 — faster, cheaper'),
-    ('claude-haiku-4-5', 'Claude Haiku 4.5 — fastest, least capable'),
+    ('claude-opus-5-5',   'Claude Opus 5.5 — most capable ($4/$20 per Mtok)'),
+    ('claude-sonnet-5-5', 'Claude Sonnet 5.5 — fast, half the price ($2/$10)'),
+    ('claude-opus-5',     'Claude Opus 5 — previous Opus ($5/$25)'),
+    ('claude-haiku-4-5',  'Claude Haiku 4.5 — cheapest ($1/$5)'),
 ]
+
+# Cached list rates, $ per million tokens, for the running cost shown in the app.
+# They are an estimate: they ignore cache reads and web-search fees, and the
+# billing console is the source of truth.
+PRICES = {
+    'claude-opus-5-5':   (4.00, 20.00),
+    'claude-opus-5':     (5.00, 25.00),
+    'claude-sonnet-5-5': (2.00, 10.00),
+    'claude-sonnet-5':   (2.00, 10.00),
+    'claude-haiku-4-5':  (1.00,  5.00),
+}
+
+
+def estimate_cost(model_id, tokens_in, tokens_out):
+    """Dollars for one call, or None for a model we have no rate for."""
+    rate = PRICES.get(model_id)
+    if not rate or tokens_in is None or tokens_out is None:
+        return None
+    return (tokens_in / 1e6) * rate[0] + (tokens_out / 1e6) * rate[1]
 
 FIELDS = {
     'business_description': 'Business Description',
@@ -170,6 +190,22 @@ EFFORTS = [
 def effort():
     value = db.get_setting('ai_effort')
     return value if value in dict(EFFORTS) else 'high'
+
+
+# Summarising transcripts is the app's one bulk job - dozens of calls per
+# project rather than one write-up - so it gets its own, cheaper settings.
+TRANSCRIPT_DEFAULT_MODEL = 'claude-sonnet-5-5'
+TRANSCRIPT_DEFAULT_EFFORT = 'medium'
+
+
+def transcript_model():
+    value = db.get_setting('transcript_model')
+    return value if value in dict(MODELS) else TRANSCRIPT_DEFAULT_MODEL
+
+
+def transcript_effort():
+    value = db.get_setting('transcript_effort')
+    return value if value in dict(EFFORTS) else TRANSCRIPT_DEFAULT_EFFORT
 
 
 def prompt_for(field):
@@ -469,8 +505,13 @@ def trends_prompt(source='summaries'):
     return TRENDS_FULL_PROMPT if source == 'transcripts' else TRENDS_PROMPT
 
 
-def _structured(prompt, system, schema, max_tokens=16000):
-    """One structured-output call, returning the parsed object."""
+def _structured(prompt, system, schema, max_tokens=16000,
+                model_id=None, effort_level=None, usage_sink=None):
+    """One structured-output call, returning the parsed object.
+
+    `usage_sink` is a dict the caller passes in to receive the token counts and
+    estimated cost of this call - measured spend rather than guesswork.
+    """
     key = api_key()
     if not key:
         raise NotConfigured(
@@ -481,16 +522,26 @@ def _structured(prompt, system, schema, max_tokens=16000):
     import anthropic  # imported lazily so the app still boots without the package
 
     client = anthropic.Anthropic(api_key=key)
+    used_model = model_id or model()
     message = _send(client, {
-        'model':      model(),
+        'model':      used_model,
         'max_tokens': max_tokens,
         'system':     system,
         'messages':   [{'role': 'user', 'content': prompt}],
         'output_config': {
             'format': {'type': 'json_schema', 'schema': schema},
-            'effort': effort(),
+            'effort': effort_level or effort(),
         },
     })
+
+    if usage_sink is not None:
+        usage = getattr(message, 'usage', None)
+        tokens_in = getattr(usage, 'input_tokens', None)
+        tokens_out = getattr(usage, 'output_tokens', None)
+        usage_sink.update(
+            model=used_model, tokens_in=tokens_in, tokens_out=tokens_out,
+            cost=estimate_cost(used_model, tokens_in, tokens_out),
+        )
 
     if getattr(message, 'stop_reason', None) == 'refusal':
         raise Refused(
@@ -533,7 +584,12 @@ def summarize_call(project, meta, transcript, research=''):
         ('{transcript}', transcript),
     ))
 
-    data = _structured(prompt, CALL_SYSTEM_PROMPT, _CALL_SCHEMA)
+    # 4k is ample for two short paragraphs and some tags; on these models the
+    # ceiling also bounds how much thinking a call can bill for.
+    usage = {}
+    data = _structured(prompt, CALL_SYSTEM_PROMPT, _CALL_SCHEMA, max_tokens=4000,
+                       model_id=transcript_model(), effort_level=transcript_effort(),
+                       usage_sink=usage)
     themes = [str(t).strip() for t in (data.get('themes') or []) if str(t).strip()]
     return {
         'headline':   (data.get('headline') or '').strip(),
@@ -545,6 +601,7 @@ def summarize_call(project, meta, transcript, research=''):
         'highlights': (data.get('highlights') or '').strip(),
         'market_reaction': (data.get('market_reaction') or '').strip(),
         'themes':     themes[:6],
+        'usage':      usage,
     }
 
 
@@ -575,7 +632,8 @@ def summarize_trends(project, calls, source='summaries'):
         ('{summaries}', '\n\n'.join(blocks)),
     ))
 
-    data = _structured(prompt, CALL_SYSTEM_PROMPT, _TRENDS_SCHEMA, max_tokens=24000)
+    data = _structured(prompt, CALL_SYSTEM_PROMPT, _TRENDS_SCHEMA, max_tokens=24000,
+                       model_id=transcript_model(), effort_level=transcript_effort())
     return {
         'trends':     [t for t in (data.get('trends') or []) if t.get('title')],
         'milestones': [m for m in (data.get('milestones') or []) if m.get('title')],
@@ -864,7 +922,7 @@ def research_call(project, meta):
     ))
 
     client = anthropic.Anthropic(api_key=key)
-    model_id = model()
+    model_id = transcript_model()
     messages = [{'role': 'user', 'content': prompt}]
     message = None
 
@@ -877,7 +935,7 @@ def research_call(project, meta):
                       'Report only what your sources say, and name the outlet.',
             'messages': messages,
             'tools': [_search_tool(model_id)],
-            'output_config': {'effort': effort()},
+            'output_config': {'effort': transcript_effort()},
         })
         if getattr(message, 'stop_reason', None) != 'pause_turn':
             break

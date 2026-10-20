@@ -236,9 +236,11 @@ function renderMasthead() {
   }
   const span = dated.length
     ? `${period(dated[0])} through ${period(dated[dated.length - 1])} · ` : '';
+  const spend = items.reduce((t, x) => t + (x.cost_usd || 0), 0);
   document.getElementById('tsum-sub').textContent =
     `${span}${items.length} call${items.length === 1 ? '' : 's'} · `
-    + `${summarised} summarised · prices from Yahoo Finance`;
+    + `${summarised} summarised${spend ? ` · $${spend.toFixed(2)} of model spend` : ''}`
+    + ` · prices from Yahoo Finance`;
 }
 
 async function upload() {
@@ -359,10 +361,16 @@ async function summarize(all = false) {
   // so it asks first and says how many.
   if (all) {
     const done = items.filter(t => (t.summary || '').trim()).length;
+    const priced = items.filter(t => t.cost_usd);
+    const avg = priced.length
+      ? priced.reduce((x, t) => x + t.cost_usd, 0) / priced.length : 0;
     const msg = `Re-summarise all ${items.length} call${items.length === 1 ? '' : 's'}?`
       + (done ? `\n\nThis replaces the ${done} summar${done === 1 ? 'y' : 'ies'} already there`
               : `\n\nThis runs`)
-      + ` and costs one model call per transcript.`;
+      + ` and costs one model call per transcript.`
+      + (avg ? `
+
+The last run averaged $${avg.toFixed(3)} a call, so expect about $${(avg * items.length).toFixed(2)}.` : '');
     if (!confirm(msg)) return;
   }
 
@@ -559,7 +567,8 @@ function render() {
               <a href="${escHtml(n.url)}" target="_blank" rel="noopener noreferrer"
                 class="text-xs text-blue-600 hover:text-blue-800 truncate" title="${escHtml(n.url)}">
                 ↗ ${escHtml(n.title)}</a>`).join('')}</div>` : ''}
-          <p class="text-[11px] text-gray-300 mt-3">${escHtml(t.filename || '')}</p>
+          <p class="text-[11px] text-gray-300 mt-3">${escHtml(t.filename || '')}${
+            t.cost_usd ? ` · $${t.cost_usd.toFixed(3)} · ${escHtml(t.summary_model || '')}` : ''}</p>
         </div>
       </div>
     </div>`;
