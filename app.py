@@ -2258,8 +2258,10 @@ def _price_moves(ticker, rows):
     since a missing window should blank one figure, not fail the page.
     """
     dated = sorted([r for r in rows if r.get('call_date')], key=lambda r: r['call_date'])
-    if not ticker or not dated:
-        return {}
+    if not ticker:
+        return {}, 'This project has no ticker, so there are no prices to look up.'
+    if not dated:
+        return {}, 'No call has a date yet, so there is no window to measure.'
 
     # Reach back far enough to cover the window before the earliest call.
     start = (datetime.strptime(dated[0]['call_date'], '%Y-%m-%d')
@@ -2268,9 +2270,10 @@ def _price_moves(ticker, rows):
         series = _cached(f'tclose:{ticker}:{start}', 900, lambda: _daily_closes(ticker, start))
     except Exception as exc:
         app.logger.info('No price history for transcripts of %s: %s', ticker, exc)
-        return {}
+        return {}, f'Yahoo Finance did not answer for {ticker}: {type(exc).__name__}: {exc}'
     if not series:
-        return {}
+        return {}, (f'Yahoo Finance returned no price history for {ticker}. If this works '
+                    f'locally but not here, Yahoo is likely refusing requests from this server.')
 
     dates = [d for d, _ in series]
     closes = [c for _, c in series]
@@ -2316,7 +2319,7 @@ def _price_moves(ticker, rows):
             prev_after_idx = after_i
             prev_label = tx.title(ticker, row.get('fiscal_quarter'),
                                   row.get('fiscal_year'), row.get('call_date'))
-    return out
+    return out, None
 
 
 def _transcripts_for(cur, project_id, project=None):
@@ -2337,11 +2340,12 @@ def _transcripts_for(cur, project_id, project=None):
             except ValueError:
                 row[field] = blank
     ticker = (project or {}).get('ticker')
-    moves = _price_moves(ticker, rows) if rows else {}
+    moves, price_error = _price_moves(ticker, rows) if rows else ({}, None)
     for row in rows:
         row['title'] = tx.title(row.get('ticker') or ticker, row.get('fiscal_quarter'),
                                 row.get('fiscal_year'), row.get('call_date'))
         row['prices'] = moves.get(row['id']) or {}
+        row['price_error'] = price_error
     return rows
 
 
@@ -3060,6 +3064,20 @@ def diagnose_providers(ticker):
         out['alphavantage']['usage'] = alphavantage.usage()
     else:
         out['alphavantage'].update(ok=False, detail='No key set.')
+
+    # Price history is a different Yahoo endpoint from estimates and fails
+    # separately — most often because the host's requests are being refused.
+    try:
+        closes = _daily_closes(ticker, (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
+        out['yahoo_prices'] = {
+            'enabled': True, 'ok': bool(closes),
+            'detail': (f'{len(closes)} daily closes in the last 30 days; latest '
+                       f'{closes[-1][0]} at {closes[-1][1]:.2f}') if closes
+                      else 'No price history returned.',
+        }
+    except Exception as exc:
+        out['yahoo_prices'] = {'enabled': True, 'ok': False,
+                               'detail': f'{type(exc).__name__}: {exc}'}
 
     try:
         rows = _consensus(yf.Ticker(ticker), None, None).get('periods') or []

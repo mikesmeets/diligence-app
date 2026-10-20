@@ -66,6 +66,7 @@
     </div>
   </div>
 
+  <p id="price-error" class="hidden text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3"></p>
   <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
     <div class="overflow-x-auto max-h-[70vh]">
       <table class="ttable w-full text-sm">
@@ -477,6 +478,14 @@ function renderPriceTable() {
       No transcripts yet.</td></tr>`;
     return;
   }
+  // Prices failing silently reads as "the app is broken"; say why instead.
+  const why = (items.find(t => t.price_error) || {}).price_error;
+  const note = document.getElementById('price-error');
+  if (note) {
+    note.textContent = why || '';
+    note.classList.toggle('hidden', !why);
+  }
+
   body.innerHTML = rows.map(t => {
     const p = t.prices || {};
     const exec = people(t);
