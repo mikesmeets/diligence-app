@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Inbox — Diligence App</title>
   <script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* Several ideas from one email sit as a stack: the active card in front, the
+     rest peeking out behind it so the count is visible without expanding. */
+  .stack { position: relative; }
+  .stack-behind {
+    position: absolute; left: 0; right: 0; top: 0; height: 100%;
+    background: #fff; border: 1px solid #d1d5db; border-radius: 0.75rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .stack-front { position: relative; }
+</style>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -76,6 +87,8 @@ const STATUSES = [
 ];
 
 let emails = [], counts = {}, filter = 'review', editing = new Set();
+// Which card of a stack is in front, per email.
+const activeIdea = new Map();
 
 function escHtml(s) {
   return String(s ?? '')
@@ -173,8 +186,15 @@ function render() {
   }
 
   el.innerHTML = emails.map(e => {
-    const p = e.parsed || {};
-    const open = editing.has(e.id);
+    const ideas = e.ideas || [];
+    const active = Math.min(activeIdea.get(e.id) || 0, Math.max(0, ideas.length - 1));
+    const idea = ideas[active];
+    const p = (idea && idea.parsed) || {};
+    const open = idea && editing.has(idea.id);
+    const filed = idea && idea.idea_id;
+    // Cards behind the front one, capped so a ten-idea email doesn't look silly.
+    const behind = Math.min(ideas.length - 1, 3);
+
     return `
     <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
       <div class="flex items-start justify-between gap-3 flex-wrap">
@@ -183,6 +203,7 @@ function render() {
           <p class="text-xs text-gray-400 mt-0.5">
             ${escHtml(e.from_addr || 'unknown sender')} · ${fmtWhen(e.received_at)} ·
             <span class="uppercase tracking-wide">${escHtml(e.origin)}</span>
+            ${ideas.length > 1 ? ` · <span class="text-gray-500 font-medium">${ideas.length} ideas</span>` : ''}
           </p>
         </div>
         <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold ${BADGE[e.status] || BADGE.ignored}">
@@ -190,19 +211,62 @@ function render() {
       </div>
 
       ${e.error ? `<p class="text-xs text-red-600 mt-2">${escHtml(e.error)}</p>` : ''}
+      ${e.notes ? `<p class="text-xs text-amber-700 mt-2">⚠ ${escHtml(e.notes)}</p>` : ''}
 
-      ${p.thesis || p.ticker ? `
-        <div class="border-t border-gray-100 mt-3 pt-3">
-          <div class="flex items-baseline gap-3 flex-wrap">
-            <span class="font-mono font-semibold text-gray-900">${escHtml(p.ticker || '—')}</span>
-            <span class="text-sm text-gray-600">${escHtml(p.company || '')}</span>
-            <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold ${
-              p.direction === 'short' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}">
-              ${escHtml((p.direction || 'long').toUpperCase())}</span>
-            <span class="text-[11px] text-gray-400">confidence ${escHtml(p.confidence || '—')}</span>
+      ${ideas.length > 1 ? `
+        <div class="flex gap-1.5 flex-wrap mt-3">${ideas.map((x, i) => `
+          <button onclick="showIdea(${e.id}, ${i})"
+            class="px-2 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+              i === active ? 'bg-gray-800 text-white'
+                           : 'bg-white border border-gray-300 text-gray-500 hover:bg-gray-50'}">
+            ${escHtml((x.parsed || {}).ticker || (x.parsed || {}).company || `#${i + 1}`)}
+            ${x.idea_id ? '✓' : ''}
+          </button>`).join('')}</div>` : ''}
+
+      ${idea ? `
+        <div class="stack mt-3" style="padding-bottom:${behind * 7}px">
+          ${Array.from({length: behind}, (_, i) => `
+            <div class="stack-behind" style="transform: translateY(${(i + 1) * 7}px) scaleX(${1 - (i + 1) * 0.02}); z-index:${i}; opacity:${0.9 - i * 0.2}"></div>`).join('')}
+
+          <div class="stack-front border border-gray-200 rounded-xl p-4 bg-white" style="z-index:10">
+            <div class="flex items-baseline gap-3 flex-wrap">
+              <span class="font-mono font-semibold text-gray-900">${escHtml(p.ticker || '—')}</span>
+              <span class="text-sm text-gray-600">${escHtml(p.company || '')}</span>
+              <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+                p.direction === 'short' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}">
+                ${escHtml((p.direction || 'long').toUpperCase())}</span>
+              <span class="text-[11px] text-gray-400">confidence ${escHtml(p.confidence || '—')}</span>
+              ${ideas.length > 1 ? `<span class="text-[11px] text-gray-300 ml-auto">${active + 1} of ${ideas.length}</span>` : ''}
+            </div>
+            <p class="text-sm text-gray-700 leading-relaxed mt-2">${escHtml(p.thesis || '')}</p>
+
+            ${open ? `
+              <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mt-3">
+                ${field(`t-${idea.id}`, 'Ticker', p.ticker)}
+                ${field(`c-${idea.id}`, 'Company', p.company)}
+                ${field(`d-${idea.id}`, 'Direction', p.direction || 'long', [['long', 'Long'], ['short', 'Short']])}
+                ${field(`a-${idea.id}`, 'Asset class', p.asset_class || 'public_equity',
+                        [['public_equity', 'Public Equity'], ['private_equity', 'Private Equity'],
+                         ['bond', 'Bond'], ['real_estate', 'Real Estate']])}
+                ${field(`s-${idea.id}`, 'Source', p.source_name)}
+                <label class="text-xs text-gray-500 w-full">Thesis
+                  <textarea id="th-${idea.id}" rows="3"
+                    class="block mt-1 w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">${escHtml(p.thesis || '')}</textarea></label>
+                <button onclick="saveParsed(${idea.id})"
+                  class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
+              </div>` : ''}
+
+            <div class="flex gap-3 mt-3 flex-wrap items-center">
+              ${filed
+                ? `<a href="/ideas/${idea.idea_id}" class="text-xs text-blue-600 hover:text-blue-700">View the idea →</a>`
+                : `<button onclick="fileIt(${idea.id})"
+                     class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">File as idea</button>
+                   <button onclick="toggleEdit(${idea.id})"
+                     class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${open ? 'Cancel' : 'Edit'}</button>
+                   <button onclick="discardIdea(${idea.id})"
+                     class="text-xs text-gray-300 hover:text-red-500 transition-colors">Not an idea</button>`}
+            </div>
           </div>
-          <p class="text-sm text-gray-700 leading-relaxed mt-2">${escHtml(p.thesis || '')}</p>
-          ${p.notes ? `<p class="text-xs text-amber-700 mt-2">⚠ ${escHtml(p.notes)}</p>` : ''}
         </div>` : ''}
 
       ${(e.attachments || []).length ? `
@@ -211,33 +275,11 @@ function render() {
             class="px-2 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-colors">
             📎 ${escHtml(a.filename)}</a>`).join('')}</div>` : ''}
 
-      ${open ? `
-        <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mt-3">
-          ${field(`t-${e.id}`, 'Ticker', p.ticker)}
-          ${field(`c-${e.id}`, 'Company', p.company)}
-          ${field(`d-${e.id}`, 'Direction', p.direction || 'long', [['long', 'Long'], ['short', 'Short']])}
-          ${field(`a-${e.id}`, 'Asset class', p.asset_class || 'public_equity',
-                  [['public_equity', 'Public Equity'], ['private_equity', 'Private Equity'],
-                   ['bond', 'Bond'], ['real_estate', 'Real Estate']])}
-          ${field(`s-${e.id}`, 'Source', p.source_name)}
-          <label class="text-xs text-gray-500 w-full">Thesis
-            <textarea id="th-${e.id}" rows="3"
-              class="block mt-1 w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">${escHtml(p.thesis || '')}</textarea></label>
-          <button onclick="saveParsed(${e.id})"
-            class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">Save</button>
-        </div>` : ''}
-
       <div class="flex gap-3 mt-3 flex-wrap">
-        ${e.status === 'filed'
-          ? `<a href="/ideas/${e.idea_id}" class="text-xs text-blue-600 hover:text-blue-700">View the idea →</a>`
-          : `<button onclick="fileIt(${e.id})"
-               class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">File as idea</button>`}
-        <button onclick="toggleEdit(${e.id})"
-          class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${open ? 'Cancel' : 'Edit'}</button>
         <button onclick="reparse(${e.id})"
           class="text-xs text-gray-400 hover:text-blue-600 transition-colors">Re-parse</button>
         <button onclick="remove(${e.id})"
-          class="text-xs text-gray-300 hover:text-red-500 transition-colors ml-auto">Delete</button>
+          class="text-xs text-gray-300 hover:text-red-500 transition-colors ml-auto">Delete email</button>
       </div>
     </div>`;
   }).join('');
@@ -248,26 +290,38 @@ function toggleEdit(id) {
   render();
 }
 
-async function saveParsed(id) {
+function showIdea(emailId, index) {
+  activeIdea.set(emailId, index);
+  render();
+}
+
+async function saveParsed(ideaId) {
   const body = {
-    ticker:      document.getElementById(`t-${id}`).value,
-    company:     document.getElementById(`c-${id}`).value,
-    direction:   document.getElementById(`d-${id}`).value,
-    asset_class: document.getElementById(`a-${id}`).value,
-    source_name: document.getElementById(`s-${id}`).value,
-    thesis:      document.getElementById(`th-${id}`).value,
+    ticker:      document.getElementById(`t-${ideaId}`).value,
+    company:     document.getElementById(`c-${ideaId}`).value,
+    direction:   document.getElementById(`d-${ideaId}`).value,
+    asset_class: document.getElementById(`a-${ideaId}`).value,
+    source_name: document.getElementById(`s-${ideaId}`).value,
+    thesis:      document.getElementById(`th-${ideaId}`).value,
   };
-  const res = await fetch(`/api/inbox/${id}`, {
+  const res = await fetch(`/api/inbox/ideas/${ideaId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) { alert(await apiError(res)); return; }
-  editing.delete(id);
+  editing.delete(ideaId);
   await load();
 }
 
-async function fileIt(id) {
-  const res = await fetch(`/api/inbox/${id}/file`, { method: 'POST' });
+async function fileIt(ideaId) {
+  const res = await fetch(`/api/inbox/ideas/${ideaId}/file`, { method: 'POST' });
+  if (!res.ok) { alert(await apiError(res)); return; }
+  await load();
+}
+
+async function discardIdea(ideaId) {
+  if (!confirm('Drop this one? The email and its other ideas stay.')) return;
+  const res = await fetch(`/api/inbox/ideas/${ideaId}`, { method: 'DELETE' });
   if (!res.ok) { alert(await apiError(res)); return; }
   await load();
 }

@@ -337,6 +337,20 @@ _CREATE_INBOX_INDEX = """
     ON inbox_emails (message_id)
 """
 
+# One row per idea found in an email. A letter pitching four names produces four
+# of these, each editable and fileable on its own, rather than one blob that can
+# only become a single idea.
+_CREATE_INBOX_IDEAS = f"""
+    CREATE TABLE IF NOT EXISTS inbox_ideas (
+        id         {_PK},
+        email_id   INTEGER NOT NULL,
+        position   INTEGER NOT NULL DEFAULT 0,
+        parsed     TEXT,
+        idea_id    INTEGER,
+        created_at TEXT    NOT NULL
+    )
+"""
+
 _CREATE_INBOX_FILES = f"""
     CREATE TABLE IF NOT EXISTS inbox_attachments (
         id         {_PK},
@@ -462,6 +476,7 @@ def init():
         cur.execute(_CREATE_INBOX)
         cur.execute(_CREATE_INBOX_INDEX)
         cur.execute(_CREATE_INBOX_FILES)
+        cur.execute(_CREATE_INBOX_IDEAS)
         cur.execute(_CREATE_DOC_TYPES)
         cur.execute(_CREATE_TRANSCRIPTS)
         cur.execute(_CREATE_DOCUMENTS)

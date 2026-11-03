@@ -3395,7 +3395,13 @@ def _trend_data(project_id):
 
 # A confident parse needs all three, or there is nothing to file.
 def _fileable(parsed):
-    return bool(parsed and parsed.get('is_idea') and parsed.get('ticker')
+    """Confident enough to file without a human looking at it.
+
+    There is no `is_idea` test here any more: an entry only exists because the
+    parse decided it was one, so requiring the flag silently blocked every
+    auto-file once the parser started returning a list.
+    """
+    return bool(parsed and parsed.get('ticker')
                 and (parsed.get('thesis') or '').strip()
                 and parsed.get('confidence') == 'high')
 
@@ -3457,8 +3463,62 @@ def _store_inbox_email(mail):
     return email_id, True
 
 
+def _email_status(ideas):
+    """Where an email sits, derived from its ideas rather than stored twice."""
+    if not ideas:
+        return 'ignored'
+    if all(i.get('idea_id') for i in ideas):
+        return 'filed'
+    return 'review'
+
+
+def _lift_legacy_parse(email_id, parsed):
+    """Turn a pre-multi-idea blob into an inbox_ideas row.
+
+    Emails parsed before one email could hold several ideas kept everything in
+    `parsed` with a single `idea_id`. Rather than migrate them all up front,
+    each is lifted the first time it is read.
+    """
+    if not isinstance(parsed, dict) or 'ideas' in parsed:
+        return
+    if not parsed.get('is_idea'):
+        return
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT idea_id FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        row = db.to_dict(cur.fetchone()) or {}
+        body = {k: parsed.get(k) for k in
+                ('ticker', 'company', 'direction', 'asset_class', 'thesis',
+                 'source_name', 'confidence')}
+        db.insert_id(cur, 'inbox_ideas',
+                     ('email_id', 'position', 'parsed', 'idea_id', 'created_at'),
+                     (email_id, 0, json.dumps(body), row.get('idea_id'),
+                      datetime.now().isoformat()))
+        # Null the source so the lift can't run twice.
+        cur.execute(f'UPDATE inbox_emails SET parsed = {db.PH} WHERE id = {db.PH}',
+                    (json.dumps({'ideas': [], 'notes': parsed.get('notes') or ''}), email_id))
+
+
+def _ideas_for_emails(cur, email_ids):
+    """{email_id: [idea rows]}, parsed and ordered."""
+    if not email_ids:
+        return {}
+    marks = ', '.join([db.PH] * len(email_ids))
+    cur.execute(
+        f'SELECT id, email_id, position, parsed, idea_id FROM inbox_ideas '
+        f'WHERE email_id IN ({marks}) ORDER BY email_id, position, id', tuple(email_ids))
+    out = {}
+    for row in db.to_dicts(cur.fetchall()):
+        try:
+            row['parsed'] = json.loads(row.get('parsed') or '{}')
+        except ValueError:
+            row['parsed'] = {}
+        out.setdefault(row['email_id'], []).append(row)
+    return out
+
+
 def _process_inbox_email(email_id):
-    """Parse one staged email and file it if the parse is confident."""
+    """Parse one staged email and file whichever ideas are confident."""
     with db.get_conn() as conn:
         cur = db.cursor(conn)
         cur.execute(
@@ -3469,7 +3529,7 @@ def _process_inbox_email(email_id):
         return
 
     try:
-        parsed = ai.parse_idea_email(row['from_addr'], row['subject'], row['body'])
+        result = ai.parse_idea_email(row['from_addr'], row['subject'], row['body'])
     except Exception as exc:
         app.logger.exception('Could not parse inbox email %s', email_id)
         with db.get_conn() as conn:
@@ -3478,23 +3538,46 @@ def _process_inbox_email(email_id):
                 ('error', f'{type(exc).__name__}: {exc}', email_id))
         return
 
-    status = 'review'
-    idea_id = None
-    if not parsed.get('is_idea'):
-        status = 'ignored'
-    elif _fileable(parsed):
+    notes = result.get('notes') or ''
+    now = datetime.now().isoformat()
+    stored = []
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        # A re-parse replaces what was found, but never an idea already filed.
+        cur.execute(f'DELETE FROM inbox_ideas WHERE email_id = {db.PH} AND idea_id IS NULL',
+                    (email_id,))
+        cur.execute(f'SELECT COUNT(*) AS n FROM inbox_ideas WHERE email_id = {db.PH}',
+                    (email_id,))
+        offset = (db.to_dict(cur.fetchone()) or {}).get('n') or 0
+        for i, parsed in enumerate(result.get('ideas') or []):
+            row_id = db.insert_id(
+                cur, 'inbox_ideas',
+                ('email_id', 'position', 'parsed', 'created_at'),
+                (email_id, offset + i, json.dumps(parsed), now))
+            stored.append((row_id, parsed))
+
+    # File the confident ones. One failure shouldn't cost the others.
+    for row_id, parsed in stored:
+        if not _fileable(parsed):
+            continue
         try:
             idea_id = _file_inbox_idea(email_id, parsed)
-            status = 'filed'
         except Exception as exc:
-            app.logger.exception('Could not file inbox email %s', email_id)
-            parsed['notes'] = ((parsed.get('notes') or '') + f' Filing failed: {exc}').strip()
+            app.logger.exception('Could not file inbox idea %s', row_id)
+            notes = (notes + f' Filing {parsed.get("ticker") or "an idea"} failed: {exc}').strip()
+            continue
+        with db.get_conn() as conn:
+            db.cursor(conn).execute(
+                f'UPDATE inbox_ideas SET idea_id = {db.PH} WHERE id = {db.PH}',
+                (idea_id, row_id))
 
     with db.get_conn() as conn:
-        db.cursor(conn).execute(
-            f'UPDATE inbox_emails SET status = {db.PH}, parsed = {db.PH}, idea_id = {db.PH}, '
-            f'error = NULL WHERE id = {db.PH}',
-            (status, json.dumps(parsed), idea_id, email_id))
+        cur = db.cursor(conn)
+        ideas = _ideas_for_emails(cur, [email_id]).get(email_id, [])
+        cur.execute(
+            f'UPDATE inbox_emails SET status = {db.PH}, parsed = {db.PH}, error = NULL '
+            f'WHERE id = {db.PH}',
+            (_email_status(ideas), json.dumps({'ideas': [], 'notes': notes}), email_id))
 
 
 def _email_pdf_for(email_id, ticker, day):
@@ -3678,50 +3761,60 @@ def list_inbox():
             row['parsed'] = json.loads(row['parsed']) if row.get('parsed') else None
         except ValueError:
             row['parsed'] = None
+        _lift_legacy_parse(row['id'], row['parsed'])
+        row['notes'] = (row['parsed'] or {}).get('notes') or ''
         row['attachments'] = by_email.get(row['id'], [])
+
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        by_idea = _ideas_for_emails(cur, [r['id'] for r in rows])
+    for row in rows:
+        row['ideas'] = by_idea.get(row['id'], [])
+
     return jsonify({'emails': rows, 'counts': counts,
                     'imap_ready': inbox.imap_ready()})
 
 
-@app.route('/api/inbox/<int:email_id>', methods=['PATCH'])
-def update_inbox_email(email_id):
-    """Correct the parse before filing it."""
+@app.route('/api/inbox/ideas/<int:row_id>', methods=['PATCH'])
+def update_inbox_idea(row_id):
+    """Correct one idea before filing it."""
     data = request.get_json(force=True)
     with db.get_conn() as conn:
         cur = db.cursor(conn)
-        cur.execute(f'SELECT parsed FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        cur.execute(f'SELECT parsed, idea_id FROM inbox_ideas WHERE id = {db.PH}', (row_id,))
         row = db.to_dict(cur.fetchone())
     if not row:
         return jsonify({'error': 'Not found'}), 404
+    if row.get('idea_id'):
+        return jsonify({'error': 'Already filed — edit the idea itself instead.'}), 409
     try:
         parsed = json.loads(row.get('parsed') or '{}')
     except ValueError:
         parsed = {}
 
-    for field in ('ticker', 'company', 'direction', 'asset_class', 'thesis',
-                  'source_name', 'notes'):
+    for field in ('ticker', 'company', 'direction', 'asset_class', 'thesis', 'source_name'):
         if field in data:
             parsed[field] = (data.get(field) or '').strip()
     parsed['ticker'] = (parsed.get('ticker') or '').upper()
-    parsed.setdefault('is_idea', True)
 
     with db.get_conn() as conn:
         db.cursor(conn).execute(
-            f'UPDATE inbox_emails SET parsed = {db.PH} WHERE id = {db.PH}',
-            (json.dumps(parsed), email_id))
+            f'UPDATE inbox_ideas SET parsed = {db.PH} WHERE id = {db.PH}',
+            (json.dumps(parsed), row_id))
     return jsonify(parsed)
 
 
-@app.route('/api/inbox/<int:email_id>/file', methods=['POST'])
-def file_inbox_email(email_id):
-    """File a staged email as an idea, using whatever the parse now holds."""
+@app.route('/api/inbox/ideas/<int:row_id>/file', methods=['POST'])
+def file_inbox_idea(row_id):
+    """File one of an email's ideas into the tracker."""
     with db.get_conn() as conn:
         cur = db.cursor(conn)
-        cur.execute(f'SELECT parsed, status FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        cur.execute(f'SELECT email_id, parsed, idea_id FROM inbox_ideas WHERE id = {db.PH}',
+                    (row_id,))
         row = db.to_dict(cur.fetchone())
     if not row:
         return jsonify({'error': 'Not found'}), 404
-    if row['status'] == 'filed':
+    if row.get('idea_id'):
         return jsonify({'error': 'Already filed'}), 409
     try:
         parsed = json.loads(row.get('parsed') or '{}')
@@ -3731,14 +3824,36 @@ def file_inbox_email(email_id):
         return jsonify({'error': 'Needs a ticker and a thesis before it can be filed.'}), 400
 
     try:
-        idea_id = _file_inbox_idea(email_id, parsed)
+        idea_id = _file_inbox_idea(row['email_id'], parsed)
     except Exception as exc:
         return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 500
+
     with db.get_conn() as conn:
-        db.cursor(conn).execute(
-            f'UPDATE inbox_emails SET status = {db.PH}, idea_id = {db.PH} WHERE id = {db.PH}',
-            ('filed', idea_id, email_id))
+        cur = db.cursor(conn)
+        cur.execute(f'UPDATE inbox_ideas SET idea_id = {db.PH} WHERE id = {db.PH}',
+                    (idea_id, row_id))
+        ideas = _ideas_for_emails(cur, [row['email_id']]).get(row['email_id'], [])
+        cur.execute(f'UPDATE inbox_emails SET status = {db.PH} WHERE id = {db.PH}',
+                    (_email_status(ideas), row['email_id']))
     return jsonify({'ok': True, 'idea_id': idea_id})
+
+
+@app.route('/api/inbox/ideas/<int:row_id>', methods=['DELETE'])
+def discard_inbox_idea(row_id):
+    """Drop one idea the parse found but you don't want."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT email_id, idea_id FROM inbox_ideas WHERE id = {db.PH}', (row_id,))
+        row = db.to_dict(cur.fetchone())
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        if row.get('idea_id'):
+            return jsonify({'error': 'Already filed — delete the idea itself instead.'}), 409
+        cur.execute(f'DELETE FROM inbox_ideas WHERE id = {db.PH}', (row_id,))
+        ideas = _ideas_for_emails(cur, [row['email_id']]).get(row['email_id'], [])
+        cur.execute(f'UPDATE inbox_emails SET status = {db.PH} WHERE id = {db.PH}',
+                    (_email_status(ideas), row['email_id']))
+    return jsonify({'ok': True})
 
 
 @app.route('/api/inbox/<int:email_id>/reparse', methods=['POST'])
@@ -3757,6 +3872,7 @@ def delete_inbox_email(email_id):
                     (email_id,))
         keys = [r['object_key'] for r in db.to_dicts(cur.fetchall())]
         cur.execute(f'DELETE FROM inbox_attachments WHERE email_id = {db.PH}', (email_id,))
+        cur.execute(f'DELETE FROM inbox_ideas WHERE email_id = {db.PH}', (email_id,))
         cur.execute(f'DELETE FROM inbox_emails WHERE id = {db.PH}', (email_id,))
     _delete_keys(keys)
     return jsonify({'ok': True})
