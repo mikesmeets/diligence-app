@@ -153,6 +153,10 @@ class NotConfigured(Exception):
     """No API key available from either the environment or settings."""
 
 
+class Truncated(Exception):
+    """The response hit max_tokens and is unparseable."""
+
+
 class Refused(Exception):
     """Claude's safety classifiers declined the request."""
 
@@ -548,10 +552,27 @@ def _structured(prompt, system, schema, max_tokens=16000,
             "Claude declined to answer this one. That's usually a false positive on "
             'benign financial work — rephrasing the prompt on the Admin page normally clears it.'
         )
+    # A response cut off at the ceiling is valid JSON's prefix, not valid JSON,
+    # and json.loads reports it as an unterminated string far from the cause.
+    # Thinking shares this budget, so a long answer and a long think compete.
+    if getattr(message, 'stop_reason', None) == 'max_tokens':
+        raise Truncated(
+            f'The answer was cut off at the {max_tokens:,}-token ceiling, so it could not be '
+            f'read. This usually means the input held more to extract than the limit allows '
+            f'- try again, or lower the effort setting so less of the budget goes on thinking.'
+        )
+
     text = next((b.text for b in message.content if b.type == 'text'), '')
     if not text:
         raise RuntimeError('Claude returned no text.')
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        # Anything else malformed: say what came back rather than a bare offset.
+        raise RuntimeError(
+            f'Claude returned something that is not valid JSON ({exc}). '
+            f'It began: {text[:160]}'
+        ) from exc
 
 
 def _fill(template, pairs):
@@ -675,6 +696,9 @@ Do not split one idea into several: a long and a short leg of the same trade, or
 company and its subsidiary discussed as one position, is a single entry. Do not merge \
 distinct names into one entry either.
 
+Return at most 15 ideas. If the email names more, take the ones it argues for \
+at length and say in `notes` which were left out.
+
 For each idea:
 - ticker: the exchange ticker, uppercase, if stated or unambiguous from the company
   name. Empty string if not.
@@ -742,7 +766,8 @@ def parse_idea_email(sender, subject, body, limit=60_000):
         ('{subject}', subject or '(no subject)'),
         ('{body}',    (body or '')[:limit]),
     ))
-    data = _structured(prompt, INBOX_SYSTEM_PROMPT, _INBOX_SCHEMA, max_tokens=8000)
+    data = _structured(prompt, INBOX_SYSTEM_PROMPT, _INBOX_SCHEMA,
+                       max_tokens=16000, effort_level='medium')
 
     ideas = []
     for raw in (data.get('ideas') or []):
@@ -856,7 +881,8 @@ def parse_idea_document(title, body, idea_types=(), sources=(), limit=150_000):
         ('{sources_hint}', sources_hint),
         ('{body}',         (body or '')[:limit]),
     ))
-    data = _structured(prompt, DOCUMENT_SYSTEM_PROMPT, _DOCUMENT_SCHEMA, max_tokens=8000)
+    data = _structured(prompt, DOCUMENT_SYSTEM_PROMPT, _DOCUMENT_SCHEMA,
+                       max_tokens=16000, effort_level='medium')
 
     import re as _re
     doc_date = (data.get('document_date') or '').strip()
