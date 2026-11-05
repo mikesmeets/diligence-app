@@ -302,6 +302,30 @@
         class="ml-auto w-44 border border-gray-300 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500" />
     </div>
 
+    <div class="flex items-end gap-3 mt-3 flex-wrap">
+      <label class="text-xs text-gray-500">From
+        <input id="bulk-from" type="date" onchange="renderBulk()"
+          class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">To
+        <input id="bulk-to" type="date" onchange="renderBulk()"
+          class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500" /></label>
+      <label class="text-xs text-gray-500">Sort
+        <select id="bulk-sort" onchange="renderBulk()"
+          class="block mt-1 border border-gray-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="day-desc">Newest first</option>
+          <option value="day-asc">Oldest first</option>
+          <option value="title-asc">Name A–Z</option>
+          <option value="title-desc">Name Z–A</option>
+          <option value="source-asc">Source A–Z</option>
+        </select></label>
+      <button onclick="clearBulkFilters()"
+        class="px-2.5 py-1.5 text-xs text-gray-500 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Clear</button>
+      <button id="bulk-dupes" onclick="selectDuplicates()"
+        class="ml-auto px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors">
+        Find duplicates
+      </button>
+    </div>
+
     <div class="flex items-center gap-3 mt-3 flex-wrap">
       <label class="text-xs text-gray-500 flex items-center gap-1.5">
         <input id="bulk-all" type="checkbox" onchange="toggleAllBulk(this.checked)" class="rounded" />
@@ -723,7 +747,7 @@ function renderBulkKinds() {
 async function setBulkKind(kind) {
   bulkKind = kind;
   bulkPicked.clear();
-  document.getElementById('bulk-search').value = '';
+  clearBulkFilters();
   await loadBulk();
 }
 
@@ -735,9 +759,80 @@ async function loadBulk() {
 }
 
 function visibleBulk() {
-  const q = (document.getElementById('bulk-search').value || '').toLowerCase().trim();
-  if (!q) return bulkRows;
-  return bulkRows.filter(r => `${r.title} ${r.detail} ${r.source} ${r.body}`.toLowerCase().includes(q));
+  const q    = (document.getElementById('bulk-search').value || '').toLowerCase().trim();
+  const from = document.getElementById('bulk-from').value;
+  const to   = document.getElementById('bulk-to').value;
+  const sort = document.getElementById('bulk-sort').value;
+
+  let rows = bulkRows;
+  if (q) {
+    rows = rows.filter(r => `${r.title} ${r.detail} ${r.source} ${r.body}`.toLowerCase().includes(q));
+  }
+  if (from || to) {
+    // Dates are YYYY-MM-DD, so string comparison is date comparison. A row with
+    // no date is excluded once a range is set rather than silently kept.
+    rows = rows.filter(r => r.day && (!from || r.day >= from) && (!to || r.day <= to));
+  }
+
+  const dir = sort.endsWith('-desc') ? -1 : 1;
+  const key = sort.split('-')[0];
+  return rows.slice().sort((a, b) => {
+    const x = (a[key] || ''), y = (b[key] || '');
+    // Equal keys fall back to id, so the order can't shuffle between renders.
+    return x === y ? (a.id - b.id) * dir : (x < y ? -1 : 1) * dir;
+  });
+}
+
+function clearBulkFilters() {
+  for (const id of ['bulk-search', 'bulk-from', 'bulk-to']) {
+    document.getElementById(id).value = '';
+  }
+  document.getElementById('bulk-sort').value = 'day-desc';
+  renderBulk();
+}
+
+// What counts as the same record, per kind. Ideas repeat the rule the inbox
+// uses — same ticker and same direction — so the two agree about what a
+// duplicate is.
+function dupeKey(row) {
+  if (bulkKind === 'ideas')  return `${(row.title || '').toUpperCase()}|${(row.detail || '').toLowerCase()}`;
+  if (bulkKind === 'inbox')  return `${(row.title || '').toLowerCase().trim()}|${(row.source || '').toLowerCase().trim()}`;
+  return (row.title || '').toLowerCase().trim();
+}
+
+function selectDuplicates() {
+  const out = document.getElementById('bulk-status');
+  const groups = new Map();
+  // Scan everything loaded, not just what the filter shows — a duplicate whose
+  // twin is filtered out is not a duplicate you can see.
+  for (const r of bulkRows) {
+    const k = dupeKey(r);
+    if (!k || k === '|') continue;
+    (groups.get(k) || groups.set(k, []).get(k)).push(r);
+  }
+
+  let names = 0, picked = 0;
+  for (const rows of groups.values()) {
+    if (rows.length < 2) continue;
+    names++;
+    // Keep the oldest — the original — and select the later copies.
+    const ordered = rows.slice().sort((a, b) =>
+      (a.day || '').localeCompare(b.day || '') || (a.id - b.id));
+    for (const r of ordered.slice(1)) {
+      bulkPicked.add(r.id);
+      picked++;
+    }
+  }
+
+  // Show every duplicate found, or the selection would sit behind a filter.
+  if (picked) clearBulkFilters(); else renderBulk();
+
+  out.className = `text-xs mt-2 ${picked ? 'text-amber-700' : 'text-gray-400'}`;
+  out.textContent = picked
+    ? `Selected ${picked} later cop${picked === 1 ? 'y' : 'ies'} across ${names} `
+      + `repeated ${names === 1 ? 'record' : 'records'}. The oldest of each is left alone — `
+      + `check the list before deleting.`
+    : 'No duplicates found in the records loaded.';
 }
 
 function renderBulk() {
