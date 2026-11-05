@@ -291,6 +291,39 @@
       effort is the bigger lever of the two.
     </p>
 
+
+  <!-- Bulk cleanup -->
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Delete Records</p>
+
+    <div class="flex items-center gap-2 flex-wrap">
+      <div id="bulk-kinds" class="flex gap-1"></div>
+      <input id="bulk-search" oninput="renderBulk()" placeholder="Filter…" autocomplete="off"
+        class="ml-auto w-44 border border-gray-300 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500" />
+    </div>
+
+    <div class="flex items-center gap-3 mt-3 flex-wrap">
+      <label class="text-xs text-gray-500 flex items-center gap-1.5">
+        <input id="bulk-all" type="checkbox" onchange="toggleAllBulk(this.checked)" class="rounded" />
+        Select all shown
+      </label>
+      <span id="bulk-count" class="text-xs text-gray-400"></span>
+      <button id="bulk-delete" onclick="deleteBulk()" disabled
+        class="ml-auto px-3 py-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-40 transition-colors">
+        Delete selected
+      </button>
+    </div>
+
+    <div id="bulk-rows" class="mt-3 border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-80 overflow-y-auto"></div>
+    <p id="bulk-status" class="text-xs mt-2"></p>
+    <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+      Deletes exactly what deleting the record one at a time would: an idea takes its
+      stored attachment, an email takes its attachments and parsed ideas, a project takes
+      its notes, documents, transcripts and model versions. Filed ideas are not removed by
+      deleting the email they came from. There is no undo.
+    </p>
+  </div>
+
   <!-- Model template -->
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <p class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Model Template</p>
@@ -674,6 +707,106 @@ async function rotateToken() {
   status('Webhook secret rotated — update it at your mail service', 'green');
 }
 
+// ── Bulk cleanup ──────────────────────────────────────────────────────────
+const BULK_KINDS = [['ideas', 'Collected ideas'], ['inbox', 'Inbox emails'], ['projects', 'Projects']];
+let bulkKind = 'ideas', bulkRows = [], bulkPicked = new Set();
+
+function renderBulkKinds() {
+  document.getElementById('bulk-kinds').innerHTML = BULK_KINDS.map(([k, label]) => `
+    <button onclick="setBulkKind('${k}')"
+      class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+        k === bulkKind ? 'bg-blue-600 text-white'
+                       : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'}">
+      ${label}</button>`).join('');
+}
+
+async function setBulkKind(kind) {
+  bulkKind = kind;
+  bulkPicked.clear();
+  document.getElementById('bulk-search').value = '';
+  await loadBulk();
+}
+
+async function loadBulk() {
+  renderBulkKinds();
+  const res = await fetch(`/api/admin/rows?kind=${encodeURIComponent(bulkKind)}`);
+  bulkRows = res.ok ? (await res.json()).rows : [];
+  renderBulk();
+}
+
+function visibleBulk() {
+  const q = (document.getElementById('bulk-search').value || '').toLowerCase().trim();
+  if (!q) return bulkRows;
+  return bulkRows.filter(r => `${r.title} ${r.detail} ${r.source} ${r.body}`.toLowerCase().includes(q));
+}
+
+function renderBulk() {
+  const rows = visibleBulk();
+  const el = document.getElementById('bulk-rows');
+  el.innerHTML = rows.length ? rows.map(r => `
+    <label class="flex items-start gap-3 px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
+      <input type="checkbox" class="mt-0.5 rounded" ${bulkPicked.has(r.id) ? 'checked' : ''}
+        onchange="pickBulk(${r.id}, this.checked)" />
+      <span class="min-w-0 flex-1">
+        <span class="font-medium text-gray-900">${escHtml(r.title || '(untitled)')}</span>
+        <span class="text-xs text-gray-400 ml-2">${escHtml(r.detail || '')}${
+          r.day ? ` · ${escHtml(r.day)}` : ''}${r.source ? ` · ${escHtml(r.source)}` : ''}</span>
+        ${r.body ? `<span class="block text-xs text-gray-400 truncate">${escHtml(r.body)}</span>` : ''}
+      </span>
+    </label>`).join('')
+    : '<p class="px-3 py-6 text-center text-sm text-gray-400">Nothing here.</p>';
+
+  const picked = rows.filter(r => bulkPicked.has(r.id)).length;
+  document.getElementById('bulk-count').textContent =
+    `${rows.length} shown${picked ? ` · ${picked} selected` : ''}`;
+  document.getElementById('bulk-delete').disabled = !picked;
+  document.getElementById('bulk-all').checked = rows.length > 0 && picked === rows.length;
+}
+
+function pickBulk(id, on) {
+  on ? bulkPicked.add(id) : bulkPicked.delete(id);
+  renderBulk();
+}
+
+function toggleAllBulk(on) {
+  // Only what the filter is showing, so a search then select-all can't delete
+  // rows that scrolled out of view.
+  visibleBulk().forEach(r => on ? bulkPicked.add(r.id) : bulkPicked.delete(r.id));
+  renderBulk();
+}
+
+async function deleteBulk() {
+  const ids = visibleBulk().filter(r => bulkPicked.has(r.id)).map(r => r.id);
+  if (!ids.length) return;
+  const label = BULK_KINDS.find(([k]) => k === bulkKind)[1].toLowerCase();
+  if (!confirm(`Delete ${ids.length} ${label}?\n\nThis also removes their stored files and cannot be undone.`)) return;
+
+  const out = document.getElementById('bulk-status');
+  const btn = document.getElementById('bulk-delete');
+  btn.disabled = true;
+  out.className = 'text-xs mt-2 text-gray-400';
+  out.textContent = `Deleting ${ids.length}…`;
+  try {
+    const res = await fetch('/api/admin/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: bulkKind, ids }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      out.className = 'text-xs mt-2 text-red-600';
+      out.textContent = data.error || `Failed (${res.status})`;
+      return;
+    }
+    bulkPicked.clear();
+    await loadBulk();
+    out.className = `text-xs mt-2 ${data.failed && data.failed.length ? 'text-amber-700' : 'text-green-700'}`;
+    out.textContent = `Deleted ${data.deleted}.`
+      + ((data.failed || []).length ? ` ${data.failed.length} could not be removed.` : '');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function load() {
   const s = await (await fetch('/api/settings')).json();
   defaults = s.default_prompts;
@@ -683,6 +816,7 @@ async function load() {
   renderAvStatus(s.av_key_source);
   renderAvUsage(s.av_usage);
   renderImapStatus(s);
+  loadBulk();
   renderHookUrl(s.inbox_token, s.inbox_token_source);
   document.getElementById('f-imap-host').value    = s.imap_host || '';
   document.getElementById('f-imap-port').value    = s.imap_port || 993;

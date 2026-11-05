@@ -3394,6 +3394,44 @@ def _trend_data(project_id):
 # tracker that starts outside the app.
 
 # A confident parse needs all three, or there is nothing to file.
+def _find_duplicate_idea(ticker, direction=None):
+    """An idea already tracking this name, or None.
+
+    Matched on ticker and direction: the same company long and short are
+    different positions, and re-pitching a name you already hold is the case
+    worth catching. The newest match wins, since that is the one a reader would
+    compare against.
+    """
+    ticker = (ticker or '').strip().upper()
+    if not ticker:
+        return None
+    sql = (f'SELECT id, ticker, direction, idea_date, thesis FROM ideas '
+           f'WHERE UPPER(ticker) = {db.PH}')
+    params = [ticker]
+    if direction:
+        sql += f' AND direction = {db.PH}'
+        params.append(direction)
+    sql += ' ORDER BY idea_date DESC, id DESC LIMIT 1'
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(sql, tuple(params))
+        return db.to_dict(cur.fetchone())
+
+
+def _dedupe_parsed(ideas):
+    """Collapse entries in one parse that name the same security."""
+    seen, out = set(), []
+    for idea in ideas:
+        key = (idea.get('ticker') or '').strip().upper() \
+              or (idea.get('company') or '').strip().lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(idea)
+    return out
+
+
 def _fileable(parsed):
     """Confident enough to file without a human looking at it.
 
@@ -3561,7 +3599,7 @@ def _process_inbox_email(email_id):
         already.discard('')
         offset = len(kept)
 
-        fresh = [p for p in (result.get('ideas') or [])
+        fresh = [p for p in _dedupe_parsed(result.get('ideas') or [])
                  if ((p.get('ticker') or '').upper() or (p.get('company') or '').lower())
                  not in already]
         for i, parsed in enumerate(fresh):
@@ -3574,6 +3612,19 @@ def _process_inbox_email(email_id):
     # File the confident ones. One failure shouldn't cost the others.
     for row_id, parsed in stored:
         if not _fileable(parsed):
+            continue
+        # Never file over something already tracked without being asked. The
+        # idea stays in the inbox flagged as a duplicate, with the match.
+        match = _find_duplicate_idea(parsed.get('ticker'), parsed.get('direction'))
+        if match:
+            parsed['duplicate_of'] = match['id']
+            parsed['duplicate_note'] = (
+                f"{match['ticker']} {match['direction']} is already tracked, "
+                f"added {(match.get('idea_date') or '')[:10]}.")
+            with db.get_conn() as conn:
+                db.cursor(conn).execute(
+                    f'UPDATE inbox_ideas SET parsed = {db.PH} WHERE id = {db.PH}',
+                    (json.dumps(parsed), row_id))
             continue
         try:
             idea_id = _file_inbox_idea(email_id, parsed)
@@ -3837,6 +3888,15 @@ def file_inbox_idea(row_id):
         parsed = {}
     if not parsed.get('ticker') or not (parsed.get('thesis') or '').strip():
         return jsonify({'error': 'Needs a ticker and a thesis before it can be filed.'}), 400
+
+    if (request.args.get('force') or '').lower() not in ('1', 'true'):
+        match = _find_duplicate_idea(parsed.get('ticker'), parsed.get('direction'))
+        if match:
+            return jsonify({
+                'error': (f"{match['ticker']} {match['direction']} is already tracked, added "
+                          f"{(match.get('idea_date') or '')[:10]}. File it anyway to keep both."),
+                'duplicate_of': match['id'],
+            }), 409
 
     try:
         idea_id = _file_inbox_idea(row['email_id'], parsed)
@@ -4108,6 +4168,14 @@ def extract_idea():
 
     result['title'] = title
     result['chars_read'] = len(text)
+    # Tell the form if this name is already tracked, so the duplicate is caught
+    # before it is saved rather than after.
+    match = _find_duplicate_idea(result.get('ticker'), result.get('direction'))
+    if match:
+        result['duplicate_of'] = match['id']
+        result['duplicate_note'] = (
+            f"{match['ticker']} {match['direction']} is already in the tracker, added "
+            f"{(match.get('idea_date') or '')[:10]}.")
     return jsonify(result)
 
 
@@ -4224,6 +4292,93 @@ def archive_idea_url(idea_id):
     if note:
         return jsonify({'error': note, **row}), 422
     return jsonify(row)
+
+
+# ── Bulk cleanup ─────────────────────────────────────────────────────────────
+#
+# Trial runs, duplicates and test emails accumulate, and removing them one at a
+# time is the kind of chore that means they never get removed. Each kind reuses
+# the same cleanup its single-row delete does, so bucket objects and child rows
+# go with the parent rather than being orphaned.
+
+BULK_KINDS = ('ideas', 'inbox', 'projects')
+
+
+def _bulk_rows(kind, limit=500):
+    """Rows for the cleanup table: enough to recognise, not the whole record."""
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        if kind == 'ideas':
+            cur.execute(
+                f'SELECT i.id, i.ticker AS title, i.direction AS detail, i.idea_date AS day, '
+                f's.name AS source, i.thesis AS body FROM ideas i '
+                f'LEFT JOIN sources s ON i.source_id = s.id '
+                f'ORDER BY i.id DESC LIMIT {int(limit)}')
+        elif kind == 'inbox':
+            cur.execute(
+                f'SELECT e.id, e.subject AS title, e.status AS detail, e.received_at AS day, '
+                f'e.from_addr AS source, e.body AS body FROM inbox_emails e '
+                f'ORDER BY e.id DESC LIMIT {int(limit)}')
+        else:
+            cur.execute(
+                f'SELECT p.id, p.name AS title, p.stage AS detail, p.created_at AS day, '
+                f'p.ticker AS source, p.thesis AS body FROM projects p '
+                f'ORDER BY p.id DESC LIMIT {int(limit)}')
+        rows = db.to_dicts(cur.fetchall())
+    for row in rows:
+        row['body'] = (row.get('body') or '')[:160]
+        row['day'] = (row.get('day') or '')[:10]
+    return rows
+
+
+@app.route('/api/admin/rows')
+def admin_rows():
+    kind = (request.args.get('kind') or 'ideas').strip()
+    if kind not in BULK_KINDS:
+        return jsonify({'error': f'unknown kind: {kind}'}), 400
+    return jsonify({'kind': kind, 'rows': _bulk_rows(kind)})
+
+
+@app.route('/api/admin/delete', methods=['POST'])
+def admin_bulk_delete():
+    """Delete several rows of one kind, with the same cleanup as deleting one."""
+    data = request.get_json(force=True) or {}
+    kind = (data.get('kind') or '').strip()
+    if kind not in BULK_KINDS:
+        return jsonify({'error': f'unknown kind: {kind}'}), 400
+
+    try:
+        ids = [int(i) for i in (data.get('ids') or [])]
+    except (TypeError, ValueError):
+        return jsonify({'error': 'ids must be numbers'}), 400
+    if not ids:
+        return jsonify({'error': 'Nothing selected.'}), 400
+
+    # Only count rows that were really there, or "Deleted 3" can be reported
+    # for three ids that no longer existed.
+    table = {'ideas': 'ideas', 'inbox': 'inbox_emails', 'projects': 'projects'}[kind]
+    marks = ', '.join([db.PH] * len(ids))
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        cur.execute(f'SELECT id FROM {table} WHERE id IN ({marks})', tuple(ids))
+        present = {r['id'] for r in db.to_dicts(cur.fetchall())}
+    missing = [i for i in ids if i not in present]
+
+    deleted, failed = 0, []
+    for row_id in [i for i in ids if i in present]:
+        try:
+            if kind == 'ideas':
+                delete_idea(row_id)
+            elif kind == 'inbox':
+                delete_inbox_email(row_id)
+            else:
+                delete_project(row_id)
+            deleted += 1
+        except Exception as exc:
+            app.logger.exception('Bulk delete failed for %s %s', kind, row_id)
+            failed.append({'id': row_id, 'error': f'{type(exc).__name__}: {exc}'})
+
+    return jsonify({'deleted': deleted, 'failed': failed, 'missing': len(missing)})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

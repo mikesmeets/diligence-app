@@ -243,6 +243,11 @@ function render() {
               ${ideas.length > 1 ? `<span class="text-[11px] text-gray-300 ml-auto">${active + 1} of ${ideas.length}</span>` : ''}
             </div>
             <p class="text-sm text-gray-700 leading-relaxed mt-2">${escHtml(p.thesis || '')}</p>
+            ${p.duplicate_note ? `
+              <p class="text-xs text-amber-700 mt-2">
+                ⚠ ${escHtml(p.duplicate_note)}
+                <a href="/ideas/${p.duplicate_of}" class="text-blue-600 hover:text-blue-700 ml-1">see it →</a>
+              </p>` : ''}
 
             ${open ? `
               <div class="flex items-end gap-3 flex-wrap bg-gray-50 rounded-lg p-3 mt-3">
@@ -264,7 +269,8 @@ function render() {
               ${filed
                 ? `<a href="/ideas/${idea.idea_id}" class="text-xs text-blue-600 hover:text-blue-700">View the idea →</a>`
                 : `<button onclick="fileIt(${idea.id})"
-                     class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">File as idea</button>
+                     class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">${
+                       p.duplicate_note ? 'File anyway' : 'File as idea'}</button>
                    <button onclick="toggleEdit(${idea.id})"
                      class="text-xs text-gray-400 hover:text-blue-600 transition-colors">${open ? 'Cancel' : 'Edit'}</button>
                    <button onclick="discardIdea(${idea.id})"
@@ -321,8 +327,17 @@ async function saveParsed(ideaId) {
   await load();
 }
 
-async function fileIt(ideaId) {
-  const res = await fetch(`/api/inbox/ideas/${ideaId}/file`, { method: 'POST' });
+async function fileIt(ideaId, force) {
+  const url = `/api/inbox/ideas/${ideaId}/file${force ? '?force=1' : ''}`;
+  const res = await fetch(url, { method: 'POST' });
+  if (res.status === 409 && !force) {
+    // Already tracked. Say which one, and let the user decide.
+    const data = await res.json().catch(() => ({}));
+    if (confirm(`${data.error || 'This name is already tracked.'}\n\nFile it as a second idea?`)) {
+      return fileIt(ideaId, true);
+    }
+    return;
+  }
   if (!res.ok) { alert(await apiError(res)); return; }
   await load();
 }
