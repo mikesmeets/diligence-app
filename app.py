@@ -3546,10 +3546,25 @@ def _process_inbox_email(email_id):
         # A re-parse replaces what was found, but never an idea already filed.
         cur.execute(f'DELETE FROM inbox_ideas WHERE email_id = {db.PH} AND idea_id IS NULL',
                     (email_id,))
-        cur.execute(f'SELECT COUNT(*) AS n FROM inbox_ideas WHERE email_id = {db.PH}',
-                    (email_id,))
-        offset = (db.to_dict(cur.fetchone()) or {}).get('n') or 0
-        for i, parsed in enumerate(result.get('ideas') or []):
+        # Whatever survived the delete is already filed. Re-parsing finds those
+        # same names again, so skip them or the stack fills with unfiled
+        # duplicates of ideas already in the tracker.
+        cur.execute(f'SELECT parsed FROM inbox_ideas WHERE email_id = {db.PH}', (email_id,))
+        kept = []
+        for r in db.to_dicts(cur.fetchall()):
+            try:
+                kept.append(json.loads(r.get('parsed') or '{}'))
+            except ValueError:
+                continue
+        already = {(k.get('ticker') or '').upper() or (k.get('company') or '').lower()
+                   for k in kept}
+        already.discard('')
+        offset = len(kept)
+
+        fresh = [p for p in (result.get('ideas') or [])
+                 if ((p.get('ticker') or '').upper() or (p.get('company') or '').lower())
+                 not in already]
+        for i, parsed in enumerate(fresh):
             row_id = db.insert_id(
                 cur, 'inbox_ideas',
                 ('email_id', 'position', 'parsed', 'created_at'),
@@ -3861,7 +3876,16 @@ def reparse_inbox_email(email_id):
     if not ai.enabled():
         return jsonify({'error': 'No Anthropic API key. Add one on the Admin page.'}), 503
     _process_inbox_email(email_id)
-    return jsonify({'ok': True})
+    # Report what the re-parse produced, so the page can say so rather than
+    # just going quiet for the twenty seconds this takes.
+    with db.get_conn() as conn:
+        cur = db.cursor(conn)
+        ideas = _ideas_for_emails(cur, [email_id]).get(email_id, [])
+        cur.execute(f'SELECT status, error FROM inbox_emails WHERE id = {db.PH}', (email_id,))
+        row = db.to_dict(cur.fetchone()) or {}
+    return jsonify({'ok': True, 'ideas': len(ideas),
+                    'filed': sum(1 for i in ideas if i.get('idea_id')),
+                    'status': row.get('status'), 'error': row.get('error')})
 
 
 @app.route('/api/inbox/<int:email_id>', methods=['DELETE'])
